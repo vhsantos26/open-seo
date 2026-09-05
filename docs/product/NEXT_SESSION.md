@@ -38,4 +38,3 @@ Executar a Fase 0, nesta ordem:
 > self-hosted sobre este fork. Comece pela Fase 0 e preserve compatibilidade
 > com o upstream. Não use credenciais reais nem faça deploy na VPS sem revisar
 > comigo os alvos e segredos.
-
