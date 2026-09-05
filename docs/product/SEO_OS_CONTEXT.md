@@ -89,27 +89,27 @@ upstream.
 
 ## O que já existe, o que é configuração e o que construiremos
 
-| Capacidade | Situação | Ação |
-|---|---|---|
-| Projetos/domínios | Já existe | Usar no piloto |
-| Contexto de negócio | Já existe em Project Context | Configurar e ampliar depois |
-| Concorrentes e key pages | Já existe | Preencher |
-| Research log | Já existe | Usar para evitar pesquisas repetidas |
-| Keywords salvas, tags e métricas | Já existe | Usar |
-| Keyword research | Já existe via DataForSEO | Configurar chave e budgets |
-| GSC | Já existe e não usa créditos | Configurar OAuth |
-| GA4 | Já existe | Opcional no piloto |
-| Rank tracking | Já existe, inclusive agendado | Configurar e validar cron Docker |
-| Site audit | Já existe, com crawler próprio | Reutilizar |
-| Lighthouse | Já existe via DataForSEO | Controlar frequência |
-| Backlinks | Já existe via DataForSEO | Usar com moderação |
-| SAM/Agent Skills/MCP | Já existe | Preferir Hermes via MCP no piloto |
-| AI Visibility | Já existe | Não reconstruir no MVP |
-| Cadastro separado de empresa | Não existe como modelo desejado | Construir |
-| Finding → Evidence → Action | Não existe completo | Construir |
-| SEO Inbox e approvals | Não existe completo | Construir |
-| Finding → GitHub → PR → validação | Não existe | Construir depois do MVP |
-| Grafo editorial e canibalização | Parcial | Construir depois do MVP |
+| Capacidade                        | Situação                        | Ação                                 |
+| --------------------------------- | ------------------------------- | ------------------------------------ |
+| Projetos/domínios                 | Já existe                       | Usar no piloto                       |
+| Contexto de negócio               | Já existe em Project Context    | Configurar e ampliar depois          |
+| Concorrentes e key pages          | Já existe                       | Preencher                            |
+| Research log                      | Já existe                       | Usar para evitar pesquisas repetidas |
+| Keywords salvas, tags e métricas  | Já existe                       | Usar                                 |
+| Keyword research                  | Já existe via DataForSEO        | Configurar chave e budgets           |
+| GSC                               | Já existe e não usa créditos    | Configurar OAuth                     |
+| GA4                               | Já existe                       | Opcional no piloto                   |
+| Rank tracking                     | Já existe, inclusive agendado   | Configurar e validar cron Docker     |
+| Site audit                        | Já existe, com crawler próprio  | Reutilizar                           |
+| Lighthouse                        | Já existe via DataForSEO        | Controlar frequência                 |
+| Backlinks                         | Já existe via DataForSEO        | Usar com moderação                   |
+| SAM/Agent Skills/MCP              | Já existe                       | Preferir Hermes via MCP no piloto    |
+| AI Visibility                     | Já existe                       | Não reconstruir no MVP               |
+| Cadastro separado de empresa      | Não existe como modelo desejado | Construir                            |
+| Finding → Evidence → Action       | Não existe completo             | Construir                            |
+| SEO Inbox e approvals             | Não existe completo             | Construir                            |
+| Finding → GitHub → PR → validação | Não existe                      | Construir depois do MVP              |
+| Grafo editorial e canibalização   | Parcial                         | Construir depois do MVP              |
 
 ## Keywords e custos
 
@@ -147,11 +147,11 @@ de mercado que o GSC não fornece.
 Exemplo de Keyword Ideas:
 
 | Itens retornados | Custo aproximado |
-|---:|---:|
-| 10 | US$ 0,0132 |
-| 100 | US$ 0,024 |
-| 500 | US$ 0,072 |
-| 1.000 | US$ 0,132 |
+| ---------------: | ---------------: |
+|               10 |       US$ 0,0132 |
+|              100 |        US$ 0,024 |
+|              500 |        US$ 0,072 |
+|            1.000 |        US$ 0,132 |
 
 O modo automático do OpenSEO pode tentar mais de uma fonte (`related`,
 `suggestions`, `ideas`) se a primeira não trouxer cobertura suficiente. Uma
@@ -290,15 +290,15 @@ Começar por canonical/noindex, sitemap/robots e metadata/JSON-LD.
 
 ## Modelo mínimo da camada própria
 
-| Entidade | Campos mínimos |
-|---|---|
-| `run` | projeto, tipo, início/fim, versão, custo e status |
-| `finding` | categoria, severidade, confiança, escopo e fingerprint |
-| `evidence` | fonte, timestamp, resumo, referência ao bruto e validade |
-| `opportunity` | impacto, esforço, confiança e dependências |
-| `recommendation` | racional, alternativas, riscos e definição de pronto |
-| `action` | tipo, responsável, status, aprovação e issue/PR/publicação |
-| `validation` | baseline, janela, resultado, regressão e conclusão |
+| Entidade         | Campos mínimos                                             |
+| ---------------- | ---------------------------------------------------------- |
+| `run`            | projeto, tipo, início/fim, versão, custo e status          |
+| `finding`        | categoria, severidade, confiança, escopo e fingerprint     |
+| `evidence`       | fonte, timestamp, resumo, referência ao bruto e validade   |
+| `opportunity`    | impacto, esforço, confiança e dependências                 |
+| `recommendation` | racional, alternativas, riscos e definição de pronto       |
+| `action`         | tipo, responsável, status, aprovação e issue/PR/publicação |
+| `validation`     | baseline, janela, resultado, regressão e conclusão         |
 
 Dados brutos e inferências devem permanecer separados. Publicação, merge e
 mudanças destrutivas sempre exigem aprovação humana.
@@ -315,4 +315,3 @@ mudanças destrutivas sempre exigem aprovação humana.
 - Google OAuth: https://developers.google.com/identity/protocols/oauth2
 - OpenRouter fees: https://openrouter.ai/docs/faq
 - PTAX: https://ptax.bcb.gov.br/ptax_internet/consultarTodasAsMoedas.do?method=consultaTodasMoedas
-
