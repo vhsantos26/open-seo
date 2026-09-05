@@ -1,5 +1,10 @@
 # OpenSEO
 
+> **Contexto deste fork:** este repositório será a base da plataforma SEO
+> self-hosted da Darashia. Antes de planejar ou implementar mudanças, leia
+> [`docs/product/SEO_OS_CONTEXT.md`](./docs/product/SEO_OS_CONTEXT.md) e
+> [`docs/product/NEXT_SESSION.md`](./docs/product/NEXT_SESSION.md).
+
 > Open source alternative to Semrush and Ahrefs
 
 OpenSEO is an SEO tool for _the people_. If tools like Semrush or Ahrefs are too expensive or bloated, OpenSEO is a pay-as-you-go alternative that you actually control.
