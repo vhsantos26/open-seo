@@ -14,7 +14,7 @@ import {
   projects,
 } from "@/db/schema";
 import { executeInBatches } from "@/db/runBatch";
-import { AUDIT_ISSUE_TYPES } from "@/shared/audit-issues";
+import { insertIssues } from "./auditIssueWrites";
 import { deterministicAuditRowId } from "@/server/lib/audit/ids";
 import type { DetectedIssue } from "@/server/lib/audit/issues/page-reporters";
 import type {
@@ -22,6 +22,7 @@ import type {
   CrawledPageResult,
   LighthouseResult,
 } from "@/server/lib/audit/types";
+import type { PageFetchClass } from "@/shared/audit-fetch-class";
 
 async function createAudit(data: {
   id: string;
@@ -200,28 +201,6 @@ async function insertCrawledBatch(
   await insertIssues(auditId, issues);
 }
 
-async function insertIssues(auditId: string, issues: DetectedIssue[]) {
-  const issueRows = await Promise.all(
-    issues.map(async (issue) => ({
-      id: await deterministicAuditRowId(
-        auditId,
-        issue.pageUrl,
-        issue.issueType,
-        issue.dedupeKey ?? "",
-      ),
-      auditId,
-      pageId: issue.pageId,
-      pageUrl: issue.pageUrl,
-      issueType: issue.issueType,
-      severity: AUDIT_ISSUE_TYPES[issue.issueType].severity,
-      detailsJson: issue.details ? JSON.stringify(issue.details) : null,
-    })),
-  );
-  await executeInBatches(issueRows, (tx, row) =>
-    tx.insert(auditIssues).values(row).onConflictDoNothing(),
-  );
-}
-
 async function insertLighthouseResults(
   auditId: string,
   lighthouseResults: LighthouseResult[],
@@ -309,17 +288,20 @@ async function getPagesForAudit(auditId: string) {
     .where(eq(auditPages.auditId, auditId));
 }
 
-async function countBlockedPages(auditId: string): Promise<number> {
+async function countPagesByFetchClass(
+  auditId: string,
+  fetchClass: PageFetchClass,
+): Promise<number> {
   const rows = await db
-    .select({ blocked: count() })
+    .select({ pages: count() })
     .from(auditPages)
     .where(
       and(
         eq(auditPages.auditId, auditId),
-        eq(auditPages.fetchClass, "blocked"),
+        eq(auditPages.fetchClass, fetchClass),
       ),
     );
-  return rows[0]?.blocked ?? 0;
+  return rows[0]?.pages ?? 0;
 }
 
 async function hasPagesForAudit(auditId: string): Promise<boolean> {
@@ -439,7 +421,7 @@ export const AuditRepository = {
   getLatestAuditForProject,
   getIssuesForAudit,
   getPagesForAudit,
-  countBlockedPages,
+  countPagesByFetchClass,
   hasPagesForAudit,
   getAuditsByProject,
   getAuditUsageForOrganization,

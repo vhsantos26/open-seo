@@ -1,3 +1,4 @@
+import { ProjectRepository } from "@/server/features/projects/repositories/ProjectRepository";
 import { sort } from "remeda";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { ActivationRepository } from "@/server/features/activation/repositories/ActivationRepository";
@@ -6,8 +7,6 @@ import { getIssueTypePageCountsForAudit } from "@/server/features/audit/reposito
 import { BacklinkSnapshotRepository } from "@/server/features/dashboard/repositories/BacklinkSnapshotRepository";
 import { Ga4ConnectionRepository } from "@/server/features/ga4/repositories/Ga4ConnectionRepository";
 import { GscConnectionRepository } from "@/server/features/gsc/repositories/GscConnectionRepository";
-import { RankTrackingRepository } from "@/server/features/rank-tracking/repositories/RankTrackingRepository";
-import { getLatestResults } from "@/server/features/rank-tracking/services/rankTrackingResults";
 import {
   createDataforseoClient,
   normalizeBacklinksTarget,
@@ -18,9 +17,6 @@ import { shouldCaptureAppErrorCode } from "@/shared/error-codes";
 // Daily cadence: fresh numbers each visit without per-visit spend; a dormant
 // project costs nothing because refreshes are visit-triggered.
 const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-// Bounds the per-config result reads on the overview path; projects rarely
-// have more than a couple of configs.
-const MAX_CONFIGS_FOR_OVERVIEW = 5;
 
 export type DashboardActivation = {
   domain: string | null;
@@ -36,14 +32,11 @@ export type DashboardActivation = {
     cardDismissedAt: string | null;
   };
   competitorClickedAt: string | null;
-};
-
-type DashboardRankSummary = {
-  trackedKeywords: number;
-  improved: number;
-  declined: number;
-  top10: number;
-  lastCheckedAt: string | null;
+  keywordsClickedAt: string | null;
+  hasAudit: boolean;
+  hasMultipleProjects: boolean;
+  hasTeammate: boolean;
+  dismissedSteps: string[];
 };
 
 export type DashboardAuditSummary = {
@@ -73,25 +66,41 @@ export type DashboardBacklinkSummary = {
 };
 
 type DashboardOverview = {
-  rank: DashboardRankSummary | null;
   audit: DashboardAuditSummary | null;
   backlinks: DashboardBacklinkSummary | null;
 };
 
 async function getActivation(input: {
+  userId: string;
   projectId: string;
   organizationId: string;
   domain: string | null;
 }): Promise<DashboardActivation> {
-  const [ga4, gsc, orgActivation, projectActivation] = await Promise.all([
+  const [
+    ga4,
+    gsc,
+    orgActivation,
+    projectActivation,
+    projectCount,
+    hasTeammate,
+    dismissed,
+    latestAudit,
+  ] = await Promise.all([
     Ga4ConnectionRepository.getByProjectId(input.projectId),
     GscConnectionRepository.getByProjectId(input.projectId),
     ActivationRepository.getOrganizationActivation(input.organizationId),
     ActivationRepository.getProjectActivation(input.projectId),
+    ProjectRepository.countProjects(input.organizationId),
+    ActivationRepository.hasTeammate(input.organizationId),
+    ActivationRepository.getDismissedSteps(input.userId, input.projectId),
+    AuditRepository.getLatestAuditForProject(input.projectId),
   ]);
 
   return {
     domain: input.domain,
+    hasMultipleProjects: projectCount > 1,
+    hasTeammate,
+    dismissedSteps: dismissed.map((row) => row.step),
     ga4: {
       connected: ga4 !== null,
       propertyDisplayName: ga4?.propertyDisplayName ?? null,
@@ -104,6 +113,8 @@ async function getActivation(input: {
       cardDismissedAt: projectActivation?.mcpCardDismissedAt ?? null,
     },
     competitorClickedAt: projectActivation?.competitorStepClickedAt ?? null,
+    keywordsClickedAt: projectActivation?.keywordStepClickedAt ?? null,
+    hasAudit: latestAudit != null,
   };
 }
 
@@ -111,56 +122,11 @@ async function getOverview(input: {
   projectId: string;
   domain: string | null;
 }): Promise<DashboardOverview> {
-  const [rank, audit, backlinks] = await Promise.all([
-    getRankSummary(input.projectId),
+  const [audit, backlinks] = await Promise.all([
     getAuditSummary(input.projectId),
     getBacklinkSummary(input.projectId, input.domain),
   ]);
-  return { rank, audit, backlinks };
-}
-
-async function getRankSummary(
-  projectId: string,
-): Promise<DashboardRankSummary | null> {
-  const configs = await RankTrackingRepository.getConfigsForProject(projectId);
-  if (configs.length === 0) return null;
-
-  const results = await Promise.all(
-    configs
-      .slice(0, MAX_CONFIGS_FOR_OVERVIEW)
-      .map((config) => getLatestResults(config.id, projectId, "7d")),
-  );
-
-  const summary: DashboardRankSummary = {
-    trackedKeywords: 0,
-    improved: 0,
-    declined: 0,
-    top10: 0,
-    lastCheckedAt: null,
-  };
-
-  for (const result of results) {
-    summary.trackedKeywords += result.rows.length;
-    if (
-      result.run?.lastCheckedAt &&
-      (!summary.lastCheckedAt ||
-        result.run.lastCheckedAt > summary.lastCheckedAt)
-    ) {
-      summary.lastCheckedAt = result.run.lastCheckedAt;
-    }
-    for (const row of result.rows) {
-      for (const device of ["desktop", "mobile"] as const) {
-        const { position, previousPosition } = row[device];
-        if (position !== null && position <= 10) summary.top10 += 1;
-        if (position === null || previousPosition === null) continue;
-        // Lower position number = better ranking.
-        if (position < previousPosition) summary.improved += 1;
-        else if (position > previousPosition) summary.declined += 1;
-      }
-    }
-  }
-
-  return summary;
+  return { audit, backlinks };
 }
 
 async function getAuditSummary(
@@ -295,6 +261,7 @@ async function ensureBacklinkSnapshot(input: {
 }
 
 export const DashboardService = {
+  setStepDismissed: ActivationRepository.setStepDismissed,
   getActivation,
   getOverview,
   ensureBacklinkSnapshot,
