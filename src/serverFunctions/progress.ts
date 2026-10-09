@@ -17,6 +17,7 @@ export const getProgressReport = createServerFn({ method: "POST" })
   .handler(({ data, context }) =>
     ProgressService.getReport({
       projectId: context.projectId,
+      projectDomain: context.project.domain,
       dateRange: data.dateRange,
     }),
   );

@@ -30,6 +30,13 @@ function isExpectedConnectionFailure(error: unknown): boolean {
   return error instanceof GscNotConnectedError || isExpectedGrantFailure(error);
 }
 
+function normalizeProjectDomain(domain: string) {
+  return domain
+    .trim()
+    .toLowerCase()
+    .replace(/^www\./, "");
+}
+
 async function getTrackedKeywords(
   projectId: string,
 ): Promise<ProgressKeyword[]> {
@@ -105,6 +112,7 @@ async function getGscPages(projectId: string, dateRange: GscDateRange) {
 
 async function getReport(input: {
   projectId: string;
+  projectDomain: string | null;
   dateRange: GscDateRange;
 }) {
   const [keywords, annotations, gsc] = await Promise.all([
@@ -119,6 +127,9 @@ async function getReport(input: {
       keywords,
       gsc: gsc.connected ? gsc.rows : null,
       annotations,
+      mainDomain: input.projectDomain
+        ? normalizeProjectDomain(input.projectDomain)
+        : null,
     }),
     annotations,
     // Keywords tracked but not pointed at any page yet.
@@ -156,12 +167,7 @@ async function getBenchmarkDomains(
   const competitors = await ProjectContextRepository.listCompetitors(projectId);
   // Stored project domains are already bare hosts; this only guards a stray
   // www. so the row matches the snapshots written for it.
-  const own = projectDomain
-    ? projectDomain
-        .trim()
-        .toLowerCase()
-        .replace(/^www\./, "")
-    : null;
+  const own = projectDomain ? normalizeProjectDomain(projectDomain) : null;
   return [
     ...(own ? [{ domain: own, name: null, isOwn: true }] : []),
     ...competitors.map((competitor) => ({
