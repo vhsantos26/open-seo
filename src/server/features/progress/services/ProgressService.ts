@@ -1,6 +1,9 @@
 import { RankTrackingRepository } from "@/server/features/rank-tracking/repositories/RankTrackingRepository";
 import { getLatestResults } from "@/server/features/rank-tracking/services/rankTrackingResults";
 import { ProjectContextRepository } from "@/server/features/project-context/repositories/ProjectContextRepository";
+import { ProjectContextService } from "@/server/features/project-context/services/ProjectContextService";
+import { normalizeBacklinksTarget } from "@/server/lib/dataforseoBacklinksTarget";
+import { AppError } from "@/server/lib/errors";
 import { DomainService } from "@/server/features/domain/services/DomainService";
 import { ProgressRepository } from "@/server/features/progress/repositories/ProgressRepository";
 import {
@@ -198,10 +201,37 @@ async function getBenchmark(input: {
 }
 
 /**
- * Fetches a fresh Domain Overview for the project's own domain and every
- * competitor and stores it as a snapshot. Goes through DomainService, so a
- * result that is still cached costs nothing; otherwise each domain is one
- * metered DataForSEO call. One bad domain does not stop the rest.
+ * Fetches a Domain Overview for one domain and stores it as a snapshot. Goes
+ * through DomainService, so a result that is still cached costs nothing;
+ * otherwise it is one metered DataForSEO call. Returns false when DataForSEO
+ * has no data for the domain, so nothing is stored.
+ */
+async function snapshotDomain(
+  projectId: string,
+  domain: string,
+  market: { locationCode: number; languageCode: string },
+  billingCustomer: BillingCustomerContext,
+) {
+  const overview = await DomainService.getOverview(
+    { projectId, domain, ...market },
+    billingCustomer,
+  );
+  if (!overview.hasData) return false;
+  await ProgressRepository.insertDomainSnapshot({
+    projectId,
+    domain,
+    ...market,
+    organicTraffic: overview.organicTraffic ?? null,
+    organicKeywords: overview.organicKeywords ?? null,
+    // The data's own date: a cached overview is older than this request.
+    capturedAt: overview.fetchedAt,
+  });
+  return true;
+}
+
+/**
+ * Refreshes the project's own domain and every competitor. One bad domain does
+ * not stop the rest.
  */
 async function refreshBenchmark(
   input: {
@@ -219,25 +249,63 @@ async function refreshBenchmark(
   const failed: string[] = [];
   for (const entry of domains) {
     try {
-      const overview = await DomainService.getOverview(
-        { projectId: input.projectId, domain: entry.domain, ...market },
+      await snapshotDomain(
+        input.projectId,
+        entry.domain,
+        market,
         billingCustomer,
       );
-      if (!overview.hasData) continue;
-      await ProgressRepository.insertDomainSnapshot({
-        projectId: input.projectId,
-        domain: entry.domain,
-        ...market,
-        organicTraffic: overview.organicTraffic ?? null,
-        organicKeywords: overview.organicKeywords ?? null,
-        capturedAt: new Date().toISOString(),
-      });
     } catch (error) {
       console.error("progress: benchmark refresh failed", entry.domain, error);
       failed.push(entry.domain);
     }
   }
   return { failed };
+}
+
+/**
+ * Saves a domain as a competitor and stores its first snapshot. Called right
+ * after the domain was looked up in Domain Overview, so the snapshot normally
+ * comes from that lookup's cache and costs nothing.
+ */
+async function trackCompetitor(
+  input: {
+    projectId: string;
+    projectDomain: string | null;
+    domain: string;
+    locationCode?: number;
+    project: ProjectMarket;
+  },
+  billingCustomer: BillingCustomerContext,
+) {
+  const domain = normalizeBacklinksTarget(input.domain, {
+    scope: "domain",
+  }).apiTarget;
+  if (
+    input.projectDomain &&
+    domain === normalizeProjectDomain(input.projectDomain)
+  ) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      "This is your own domain, not a competitor.",
+    );
+  }
+  await ProjectContextService.applyContextUpdates(
+    input.projectId,
+    [{ addCompetitors: [{ domain }] }],
+    "user",
+  );
+  const market = resolveLabsMarket(
+    { locationCode: input.locationCode },
+    input.project,
+  );
+  const snapshotSaved = await snapshotDomain(
+    input.projectId,
+    domain,
+    market,
+    billingCustomer,
+  );
+  return { domain, snapshotSaved };
 }
 
 // ---------------------------------------------------------------------------
@@ -261,5 +329,6 @@ export const ProgressService = {
   removeAnnotation,
   getBenchmark,
   refreshBenchmark,
+  trackCompetitor,
   inspectPages,
 };

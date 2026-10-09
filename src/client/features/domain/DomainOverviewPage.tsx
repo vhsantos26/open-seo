@@ -24,6 +24,7 @@ import {
 } from "@/client/features/domain/domainSearchValidation";
 import { useDomainOverviewQuery } from "@/client/features/domain/hooks/useDomainOverviewQuery";
 import { DomainOverviewLoadingState } from "@/client/features/domain/components/DomainOverviewLoadingState";
+import { TrackCompetitorButton } from "@/client/features/domain/components/TrackCompetitorButton";
 import { RecentSearches } from "@/client/components/RecentSearches";
 import { QueryError } from "@/client/components/QueryState";
 import { DomainSearchCard } from "@/client/features/domain/components/DomainSearchCard";
@@ -630,6 +631,15 @@ export function DomainOverviewPage({
                 <Badge variant="outline">
                   {RESEARCH_SCOPE_LABELS[state.overview.scope]}
                 </Badge>
+                {state.overview.hasData ? (
+                  <div className="ml-auto">
+                    <TrackCompetitorButton
+                      projectId={projectId}
+                      domain={state.overview.domain}
+                      locationCode={routeState.sentLocationCode}
+                    />
+                  </div>
+                ) : null}
               </div>
               <div className="px-4 pb-4">
                 <div className="grid grid-cols-1 gap-3 rounded-lg border border-border p-3 md:grid-cols-2">
