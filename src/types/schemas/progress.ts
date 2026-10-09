@@ -35,3 +35,9 @@ export const inspectPagesSchema = z.object({
     .min(1)
     .max(20),
 });
+
+export const trackCompetitorSchema = z.object({
+  projectId: projectIdField,
+  domain: z.string().trim().min(1).max(2048),
+  locationCode: z.number().int().positive().optional(),
+});
