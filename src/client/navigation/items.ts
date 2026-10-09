@@ -11,6 +11,7 @@ import {
   Link2,
   MessageSquare,
   Search,
+  Sparkles,
   TrendingUp,
 } from "lucide-react";
 import { linkOptions } from "@tanstack/react-router";
@@ -59,6 +60,11 @@ const projectNavItems = [
     to: "/p/$projectId/backlinks" as const,
     label: "Backlinks",
     icon: Link2,
+  },
+  {
+    to: "/p/$projectId/brand-lookup" as const,
+    label: "Brand Lookup",
+    icon: Sparkles,
   },
   {
     to: "/p/$projectId/audit" as const,
@@ -136,6 +142,7 @@ export function getProjectNavGroups(projectId: string) {
         byPath("/p/$projectId/keywords"),
         byPath("/p/$projectId/domain"),
         byPath("/p/$projectId/backlinks"),
+        byPath("/p/$projectId/brand-lookup"),
       ],
     },
     {

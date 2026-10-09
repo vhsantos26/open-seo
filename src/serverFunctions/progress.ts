@@ -9,6 +9,7 @@ import {
   progressProjectInputSchema,
   progressReportInputSchema,
   removeAnnotationSchema,
+  trackCompetitorSchema,
 } from "@/types/schemas/progress";
 
 export const getProgressReport = createServerFn({ method: "POST" })
@@ -61,6 +62,24 @@ export const refreshProgressBenchmark = createServerFn({ method: "POST" })
       {
         projectId: context.projectId,
         projectDomain: context.project.domain,
+        project: context.project,
+      },
+      context,
+    ),
+  );
+
+// Saves a domain as a competitor and stores its first snapshot. Metered only
+// when the domain's Domain Overview is no longer cached.
+export const trackCompetitor = createServerFn({ method: "POST" })
+  .middleware(requireProjectContext)
+  .validator(trackCompetitorSchema)
+  .handler(({ data, context }) =>
+    ProgressService.trackCompetitor(
+      {
+        projectId: context.projectId,
+        projectDomain: context.project.domain,
+        domain: data.domain,
+        locationCode: data.locationCode,
         project: context.project,
       },
       context,
