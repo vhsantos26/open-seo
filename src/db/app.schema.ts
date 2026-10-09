@@ -275,6 +275,8 @@ export const rankTrackingKeywords = sqliteTable(
     // Set when a user pins the keyword to the top of the tracker's table.
     // Pins are shared by everyone in the project.
     pinnedAt: text("pinned_at"),
+    // The page this keyword should rank; the progress view groups by it.
+    targetUrl: text("target_url"),
     createdAt: text("created_at")
       .notNull()
       .default(sql`(current_timestamp)`),
@@ -402,39 +404,6 @@ export const projectActivationState = sqliteTable("project_activation_state", {
     .notNull()
     .default(sql`(current_timestamp)`),
 });
-
-// Point-in-time backlink profile summaries for the project's own domain,
-// written by the dashboard's visit-triggered refresh. DataForSEO's summary
-// already carries new/lost counts, so one snapshot renders a full card;
-// rows accumulate into history for future trend views. The domain is stored
-// per row so a later project-domain change doesn't rewrite history.
-export const backlinkSnapshots = sqliteTable(
-  "backlink_snapshots",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    projectId: text("project_id")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    domain: text("domain").notNull(),
-    rank: integer("rank"),
-    backlinks: integer("backlinks"),
-    referringDomains: integer("referring_domains"),
-    brokenBacklinks: integer("broken_backlinks"),
-    newBacklinks: integer("new_backlinks"),
-    lostBacklinks: integer("lost_backlinks"),
-    newReferringDomains: integer("new_referring_domains"),
-    lostReferringDomains: integer("lost_referring_domains"),
-    capturedAt: text("captured_at")
-      .notNull()
-      .default(sql`(current_timestamp)`),
-  },
-  (table) => [
-    index("backlink_snapshots_project_captured_idx").on(
-      table.projectId,
-      table.capturedAt,
-    ),
-  ],
-);
 
 // Personal checklist preferences; completion remains derived from product state.
 export const dashboardStepDismissals = sqliteTable(

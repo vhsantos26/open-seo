@@ -142,6 +142,21 @@ async function setKeywordsPinned(
   return { updated: updatedIds.length, updatedIds };
 }
 
+async function setKeywordsTargetUrl(
+  configId: string,
+  projectId: string,
+  keywordIds: string[],
+  targetUrl: string | null,
+) {
+  await getValidatedConfig(configId, projectId);
+  const updatedIds = await RankTrackingRepository.setKeywordsTargetUrl(
+    [...new Set(keywordIds)],
+    configId,
+    targetUrl,
+  );
+  return { updated: updatedIds.length, updatedIds };
+}
+
 async function estimateCost(
   configId: string,
   projectId: string,
@@ -211,5 +226,6 @@ export const RankTrackingKeywordService = {
   addKeywords,
   removeKeywords,
   setKeywordsPinned,
+  setKeywordsTargetUrl,
   estimateCost,
 };
