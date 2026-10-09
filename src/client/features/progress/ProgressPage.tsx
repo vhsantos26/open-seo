@@ -34,6 +34,8 @@ export function ProgressPage({ projectId }: { projectId: string }) {
   });
   const report = reportQuery.data;
   const pageUrls = report?.pages.map((page) => page.url) ?? [];
+  const mainPage = report?.pages.find((page) => page.isMain);
+  const otherPages = report?.pages.filter((page) => !page.isMain) ?? [];
 
   const inspectMutation = useMutation({
     mutationFn: () =>
@@ -119,26 +121,18 @@ export function ProgressPage({ projectId }: { projectId: string }) {
           title="No pages to follow yet"
           description="Point tracked keywords at the page that should rank for them, or add a note about a page change. Pages then appear here with their rankings and traffic."
         />
-      ) : (
-        <div className="space-y-4">
-          {report.pages.map((page) => (
-            <PageProgressCard
-              key={page.url}
-              page={page}
-              indexing={indexing[page.url]}
-              gscConnected={report.gscConnected}
-            />
-          ))}
-        </div>
-      )}
+      ) : null}
 
-      <UnmappedKeywordsCard
-        projectId={projectId}
-        keywords={report.unmapped}
-        pageUrls={pageUrls}
-      />
-
+      {/* The main site and the change log sit together at the top; the other
+          pages are compact cards below so the list stays short. */}
       <div className="grid items-start gap-5 lg:grid-cols-2">
+        {mainPage ? (
+          <PageProgressCard
+            page={mainPage}
+            indexing={indexing[mainPage.url]}
+            gscConnected={report.gscConnected}
+          />
+        ) : null}
         <AnnotationsCard
           projectId={projectId}
           annotations={report.annotations}
@@ -147,7 +141,30 @@ export function ProgressPage({ projectId }: { projectId: string }) {
             void queryClient.invalidateQueries({ queryKey: ["progressReport"] })
           }
         />
+      </div>
+
+      {otherPages.length > 0 ? (
+        <div className="grid items-start gap-5 md:grid-cols-2 xl:grid-cols-3">
+          {otherPages.map((page) => (
+            <PageProgressCard
+              key={page.url}
+              page={page}
+              indexing={indexing[page.url]}
+              gscConnected={report.gscConnected}
+            />
+          ))}
+        </div>
+      ) : null}
+
+      <div
+        className={`grid items-start gap-5 ${report.unmapped.length > 0 ? "lg:grid-cols-2" : ""}`}
+      >
         <BenchmarkCard projectId={projectId} />
+        <UnmappedKeywordsCard
+          projectId={projectId}
+          keywords={report.unmapped}
+          pageUrls={pageUrls}
+        />
       </div>
     </div>
   );
