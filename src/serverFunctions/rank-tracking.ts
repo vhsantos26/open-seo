@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { waitUntil } from "cloudflare:workers";
 import { RankTrackingRepository } from "@/server/features/rank-tracking/repositories/RankTrackingRepository";
 import { RankTrackingService } from "@/server/features/rank-tracking/services/RankTrackingService";
+import { RankTrackingKeywordService } from "@/server/features/rank-tracking/services/RankTrackingKeywordService";
 import { getLatestResults } from "@/server/features/rank-tracking/services/rankTrackingResults";
 import { AppError, asAppError } from "@/server/lib/errors";
 import { captureServerEvent } from "@/server/lib/posthog";
@@ -16,6 +17,8 @@ import {
   estimateCostSchema,
   addKeywordsSchema,
   removeKeywordsSchema,
+  setKeywordsPinnedSchema,
+  setKeywordsTargetUrlSchema,
   refreshMetricsSchema,
   getKeywordHistorySchema,
   getConfigTrendSchema,
@@ -260,6 +263,30 @@ export const removeTrackingKeywords = createServerFn({ method: "POST" })
       data.configId,
       context.projectId,
       data.keywordIds,
+    );
+  });
+
+export const setTrackingKeywordsPinned = createServerFn({ method: "POST" })
+  .middleware(requireProjectContext)
+  .validator(setKeywordsPinnedSchema)
+  .handler(async ({ data, context }) => {
+    return RankTrackingKeywordService.setKeywordsPinned(
+      data.configId,
+      context.projectId,
+      data.keywordIds,
+      data.pinned,
+    );
+  });
+
+export const setTrackingKeywordsTargetUrl = createServerFn({ method: "POST" })
+  .middleware(requireProjectContext)
+  .validator(setKeywordsTargetUrlSchema)
+  .handler(async ({ data, context }) => {
+    return RankTrackingKeywordService.setKeywordsTargetUrl(
+      data.configId,
+      context.projectId,
+      data.keywordIds,
+      data.targetUrl,
     );
   });
 

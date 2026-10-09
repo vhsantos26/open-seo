@@ -265,6 +265,58 @@ async function removeKeywordsFromConfig(
   return removedIds;
 }
 
+async function setKeywordsPinned(
+  keywordIds: string[],
+  configId: string,
+  pinned: boolean,
+) {
+  const pinnedAt = pinned ? new Date().toISOString() : null;
+  const updatedIds: string[] = [];
+  // Same IN-list ceiling as removeKeywordsFromConfig, plus two binds for
+  // configId and pinnedAt.
+  const updateBatchSize = 90;
+  for (let i = 0; i < keywordIds.length; i += updateBatchSize) {
+    const chunk = keywordIds.slice(i, i + updateBatchSize);
+    const updated = await db
+      .update(rankTrackingKeywords)
+      .set({ pinnedAt })
+      .where(
+        and(
+          inArray(rankTrackingKeywords.id, chunk),
+          eq(rankTrackingKeywords.configId, configId),
+        ),
+      )
+      .returning({ id: rankTrackingKeywords.id });
+    updatedIds.push(...updated.map((row) => row.id));
+  }
+  return updatedIds;
+}
+
+async function setKeywordsTargetUrl(
+  keywordIds: string[],
+  configId: string,
+  targetUrl: string | null,
+) {
+  const updatedIds: string[] = [];
+  // Same IN-list ceiling as setKeywordsPinned.
+  const updateBatchSize = 90;
+  for (let i = 0; i < keywordIds.length; i += updateBatchSize) {
+    const chunk = keywordIds.slice(i, i + updateBatchSize);
+    const updated = await db
+      .update(rankTrackingKeywords)
+      .set({ targetUrl })
+      .where(
+        and(
+          inArray(rankTrackingKeywords.id, chunk),
+          eq(rankTrackingKeywords.configId, configId),
+        ),
+      )
+      .returning({ id: rankTrackingKeywords.id });
+    updatedIds.push(...updated.map((row) => row.id));
+  }
+  return updatedIds;
+}
+
 async function getConfigSummaries(projectId: string) {
   const configs = await getConfigsForProject(projectId);
   if (configs.length === 0) return [];
@@ -379,6 +431,8 @@ export const RankTrackingRepository = {
   getKeywordsForConfig,
   addKeywordsToConfig,
   removeKeywordsFromConfig,
+  setKeywordsPinned,
+  setKeywordsTargetUrl,
   updateKeywordMetrics,
   getKeywordCountsForConfigs,
   getConfigSummaries,

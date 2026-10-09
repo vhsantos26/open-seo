@@ -22,6 +22,8 @@ function makeRow(
     trackingKeywordId: keyword,
     keyword,
     matchCase: false,
+    pinned: false,
+    targetUrl: null,
     searchVolume: metrics.volume ?? null,
     keywordDifficulty: metrics.kd ?? null,
     cpc: metrics.cpc ?? null,

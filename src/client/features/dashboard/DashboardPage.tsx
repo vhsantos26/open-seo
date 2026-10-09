@@ -119,22 +119,18 @@ export function DashboardPage({ projectId }: { projectId: string }) {
           },
         ]
       : []),
-    ...(overview && showBacklinks
-      ? [
-          {
-            key: "backlinks",
-            hasData: overview.backlinks != null || refreshMutation.isPending,
-            node: (
-              <BacklinkPulseCard
-                projectId={projectId}
-                backlinks={overview.backlinks}
-                refreshing={refreshMutation.isPending}
-              />
-            ),
-          },
-        ]
-      : []),
   ];
+
+  // Backlinks always come last: the raw counts are the weakest progress signal
+  // here, so they never outrank the cards that carry real data.
+  const backlinksCard =
+    overview && showBacklinks ? (
+      <BacklinkPulseCard
+        projectId={projectId}
+        backlinks={overview.backlinks}
+        refreshing={refreshMutation.isPending}
+      />
+    ) : null;
 
   return (
     <div className="px-4 py-4 pb-24 md:px-6 md:py-6 md:pb-8">
@@ -176,6 +172,7 @@ export function DashboardPage({ projectId }: { projectId: string }) {
               <Fragment key={card.key}>{card.node}</Fragment>
             ),
           )}
+          {backlinksCard}
         </div>
       </div>
     </div>
