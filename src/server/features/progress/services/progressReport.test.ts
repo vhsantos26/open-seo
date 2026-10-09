@@ -103,4 +103,18 @@ describe("buildProgressPages", () => {
 
     expect(pages[0]?.lastChange?.note).toBe("Edited all pages");
   });
+
+  it("always lists the main site first, even without keywords or traffic", () => {
+    const pages = buildProgressPages({
+      keywords: [keyword({ targetUrl: "https://doisrios.com/guias" })],
+      gsc: null,
+      annotations: [],
+      mainDomain: "doisrios.com",
+    });
+
+    expect(pages.map((page) => [page.url, page.isMain])).toEqual([
+      ["https://doisrios.com", true],
+      ["https://doisrios.com/guias", false],
+    ]);
+  });
 });

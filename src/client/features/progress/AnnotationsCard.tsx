@@ -61,7 +61,7 @@ export function AnnotationsCard({
           if (note.trim() && !addMutation.isPending) addMutation.mutate();
         }}
       >
-        <label className="space-y-1 text-xs text-muted-foreground">
+        <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
           Date
           <Input
             type="date"
@@ -71,7 +71,7 @@ export function AnnotationsCard({
             className="w-40"
           />
         </label>
-        <label className="space-y-1 text-xs text-muted-foreground">
+        <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
           Page
           <select
             value={url}
@@ -86,7 +86,7 @@ export function AnnotationsCard({
             ))}
           </select>
         </label>
-        <label className="min-w-56 flex-1 space-y-1 text-xs text-muted-foreground">
+        <label className="flex min-w-56 flex-1 flex-col gap-1.5 text-xs text-muted-foreground">
           What changed
           <Input
             value={note}

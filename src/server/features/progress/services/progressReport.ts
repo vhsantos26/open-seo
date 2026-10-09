@@ -45,6 +45,8 @@ type GscTotals = {
 
 type ProgressPage = {
   url: string;
+  /** The project's own home page, shown first and in full. */
+  isMain: boolean;
   gsc: GscTotals | null;
   keywords: ProgressKeyword[];
   /** Keywords with a position inside the top 10 now / at the baseline. */
@@ -71,6 +73,8 @@ export function buildProgressPages(input: {
   keywords: ProgressKeyword[];
   gsc: { current: ProgressGscRow[]; previous: ProgressGscRow[] } | null;
   annotations: ProgressAnnotation[];
+  /** The project's bare domain; its home page is always listed. */
+  mainDomain?: string | null;
 }): ProgressPage[] {
   // Display URL per normalized key, first seen wins (target URLs come first so
   // the page keeps the URL the user typed rather than a GSC variant).
@@ -82,6 +86,10 @@ export function buildProgressPages(input: {
     if (!display.has(key)) display.set(key, url);
     return key;
   };
+
+  const mainKey = input.mainDomain
+    ? claim(`https://${input.mainDomain}`)
+    : null;
 
   const keywordsByPage = new Map<string, ProgressKeyword[]>();
   for (const keyword of input.keywords) {
@@ -120,6 +128,7 @@ export function buildProgressPages(input: {
     const before = previous?.get(key);
     pages.push({
       url,
+      isMain: key === mainKey,
       // Connected but absent from the rows means zero impressions, not unknown.
       gsc: current
         ? {
@@ -143,6 +152,8 @@ export function buildProgressPages(input: {
   return sort(
     pages,
     (a, b) =>
-      b.keywords.length - a.keywords.length || a.url.localeCompare(b.url),
+      Number(b.isMain) - Number(a.isMain) ||
+      b.keywords.length - a.keywords.length ||
+      a.url.localeCompare(b.url),
   );
 }
