@@ -40,6 +40,7 @@ export interface RankTrackingRow {
   keyword: string;
   matchCase: boolean;
   pinned: boolean;
+  targetUrl: string | null;
   searchVolume: number | null;
   keywordDifficulty: number | null;
   cpc: number | null;
@@ -136,6 +137,17 @@ export const setKeywordsPinnedSchema = z.object({
   configId: z.string().uuid(),
   keywordIds: z.array(z.string().uuid()).min(1).max(2000),
   pinned: z.boolean(),
+});
+
+export const setKeywordsTargetUrlSchema = z.object({
+  projectId: z.string().uuid(),
+  configId: z.string().uuid(),
+  keywordIds: z.array(z.string().uuid()).min(1).max(2000),
+  // null clears the target page.
+  targetUrl: z
+    .url({ protocol: /^https?$/ })
+    .max(2000)
+    .nullable(),
 });
 
 export const refreshMetricsSchema = z.object({

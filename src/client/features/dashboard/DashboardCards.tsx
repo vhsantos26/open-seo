@@ -275,25 +275,15 @@ export function BacklinkPulseCard({
               : backlinks.backlinks.toLocaleString()
           }
         />
-        <StatTile
-          label="New links"
-          value={`▲ ${newLost(backlinks.newBacklinks)}`}
-          tone={
-            backlinks.newBacklinks && backlinks.newBacklinks > 0
-              ? "success"
-              : undefined
-          }
-        />
-        <StatTile
-          label="Lost links"
-          value={`▼ ${newLost(backlinks.lostBacklinks)}`}
-          tone={
-            backlinks.lostBacklinks && backlinks.lostBacklinks > 0
-              ? "destructive"
-              : undefined
-          }
-        />
+        <StatTile label="New links" value={newLost(backlinks.newBacklinks)} />
+        <StatTile label="Lost links" value={newLost(backlinks.lostBacklinks)} />
       </div>
+      {/* Raw counts grow with automated directories and scrapers that carry
+          no ranking value, so a rising number is not evidence of progress. */}
+      <p className="pt-3 text-xs text-muted-foreground">
+        Raw counts include automated directories and low-quality links. Check
+        the sources on the Backlinks page before reading growth as progress.
+      </p>
     </CardShell>
   );
 }

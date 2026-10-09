@@ -1,4 +1,5 @@
 import {
+  Activity,
   Bookmark,
   Bot,
   Brain,
@@ -38,6 +39,11 @@ const projectNavItems = [
     to: "/p/$projectId/rank-tracking" as const,
     label: "Rank Tracking",
     icon: TrendingUp,
+  },
+  {
+    to: "/p/$projectId/progress" as const,
+    label: "Progress",
+    icon: Activity,
   },
   {
     to: "/p/$projectId/search-performance" as const,
@@ -143,6 +149,7 @@ export function getProjectNavGroups(projectId: string) {
     {
       label: "My Site",
       items: [
+        byPath("/p/$projectId/progress"),
         byPath("/p/$projectId/search-performance"),
         byPath("/p/$projectId/rank-tracking"),
         byPath("/p/$projectId/saved"),

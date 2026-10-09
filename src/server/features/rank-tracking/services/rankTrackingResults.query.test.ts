@@ -37,7 +37,7 @@ beforeAll(async () => {
     CREATE TABLE rank_tracking_keywords (
       id TEXT PRIMARY KEY, config_id TEXT, keyword TEXT, match_case INTEGER,
       search_volume INTEGER, keyword_difficulty INTEGER, cpc REAL,
-      metrics_fetched_at TEXT, pinned_at TEXT, created_at TEXT
+      metrics_fetched_at TEXT, pinned_at TEXT, target_url TEXT, created_at TEXT
     );
     CREATE TABLE rank_check_runs (
       id TEXT PRIMARY KEY, config_id TEXT, project_id TEXT, status TEXT,

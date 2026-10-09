@@ -18,6 +18,7 @@ import {
   addKeywordsSchema,
   removeKeywordsSchema,
   setKeywordsPinnedSchema,
+  setKeywordsTargetUrlSchema,
   refreshMetricsSchema,
   getKeywordHistorySchema,
   getConfigTrendSchema,
@@ -274,6 +275,18 @@ export const setTrackingKeywordsPinned = createServerFn({ method: "POST" })
       context.projectId,
       data.keywordIds,
       data.pinned,
+    );
+  });
+
+export const setTrackingKeywordsTargetUrl = createServerFn({ method: "POST" })
+  .middleware(requireProjectContext)
+  .validator(setKeywordsTargetUrlSchema)
+  .handler(async ({ data, context }) => {
+    return RankTrackingKeywordService.setKeywordsTargetUrl(
+      data.configId,
+      context.projectId,
+      data.keywordIds,
+      data.targetUrl,
     );
   });
 

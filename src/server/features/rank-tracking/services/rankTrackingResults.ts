@@ -103,6 +103,7 @@ export async function getLatestResults(
         keyword: keyword.keyword,
         matchCase: keyword.matchCase,
         pinned: keyword.pinnedAt !== null,
+        targetUrl: keyword.targetUrl,
         searchVolume: keyword.searchVolume,
         keywordDifficulty: keyword.keywordDifficulty,
         cpc: keyword.cpc,
