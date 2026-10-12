@@ -17,6 +17,10 @@ import { shouldCaptureAppErrorCode } from "@/shared/error-codes";
 // Daily cadence: fresh numbers each visit without per-visit spend; a dormant
 // project costs nothing because refreshes are visit-triggered.
 const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// A snapshot taken without the quality count is retried after this long, so it
+// fills in without waiting a full day, but a failing call is not hammered.
+const QUALITY_RETRY_MS = 60 * 60 * 1000;
+const HISTORY_LIMIT = 180;
 
 export type DashboardActivation = {
   domain: string | null;
@@ -52,17 +56,26 @@ export type DashboardAuditSummary = {
   totalIssueTypes: number;
 };
 
+type DashboardBacklinkHistoryPoint = {
+  capturedAt: string;
+  referringDomains: number | null;
+  qualityReferringDomains: number | null;
+};
+
 export type DashboardBacklinkSummary = {
   domain: string;
   rank: number | null;
   backlinks: number | null;
   referringDomains: number | null;
+  /** Referring domains that pass the spam filter; null until first recorded. */
+  qualityReferringDomains: number | null;
   newBacklinks: number | null;
   lostBacklinks: number | null;
   newReferringDomains: number | null;
   lostReferringDomains: number | null;
   capturedAt: string;
   stale: boolean;
+  history: DashboardBacklinkHistoryPoint[];
 };
 
 type DashboardOverview = {
@@ -157,10 +170,15 @@ async function getAuditSummary(
   };
 }
 
-function isSnapshotFresh(capturedAt: string): boolean {
-  const capturedMs = Date.parse(capturedAt);
-  if (Number.isNaN(capturedMs)) return false;
-  return Date.now() - capturedMs < SNAPSHOT_MAX_AGE_MS;
+function needsRefresh(snapshot: {
+  capturedAt: string;
+  qualityReferringDomains: number | null;
+}): boolean {
+  const capturedMs = Date.parse(snapshot.capturedAt);
+  if (Number.isNaN(capturedMs)) return true;
+  const age = Date.now() - capturedMs;
+  if (age >= SNAPSHOT_MAX_AGE_MS) return true;
+  return snapshot.qualityReferringDomains === null && age >= QUALITY_RETRY_MS;
 }
 
 async function getBacklinkSummary(
@@ -171,18 +189,52 @@ async function getBacklinkSummary(
   const snapshot =
     await BacklinkSnapshotRepository.getLatestForProject(projectId);
   if (!snapshot || snapshot.domain !== domain) return null;
+  const history = await BacklinkSnapshotRepository.listHistory(
+    projectId,
+    domain,
+    HISTORY_LIMIT,
+  );
   return {
     domain: snapshot.domain,
     rank: snapshot.rank,
     backlinks: snapshot.backlinks,
     referringDomains: snapshot.referringDomains,
+    qualityReferringDomains: snapshot.qualityReferringDomains,
     newBacklinks: snapshot.newBacklinks,
     lostBacklinks: snapshot.lostBacklinks,
     newReferringDomains: snapshot.newReferringDomains,
     lostReferringDomains: snapshot.lostReferringDomains,
     capturedAt: snapshot.capturedAt,
-    stale: !isSnapshotFresh(snapshot.capturedAt),
+    stale: needsRefresh(snapshot),
+    history: history.map((row) => ({
+      capturedAt: row.capturedAt,
+      referringDomains: row.referringDomains,
+      qualityReferringDomains: row.qualityReferringDomains,
+    })),
   };
+}
+
+/**
+ * How many referring domains pass the Backlinks page's spam filter. The list
+ * call asks for one row and reads only the total, so it costs one request. A
+ * failure leaves the count null (the snapshot is still worth keeping) and is
+ * retried within the hour.
+ */
+async function fetchQualityReferringDomains(
+  dataforseo: ReturnType<typeof createDataforseoClient>,
+  target: ReturnType<typeof normalizeBacklinksTarget>,
+): Promise<number | null> {
+  try {
+    const result = await dataforseo.backlinks.referringDomains({
+      target: target.apiTarget,
+      includeSubdomains: target.includeSubdomains,
+      limit: 1,
+    });
+    return result.totalCount ?? null;
+  } catch (error) {
+    console.warn("dashboard: quality referring domains unavailable", error);
+    return null;
+  }
 }
 
 /**
@@ -206,7 +258,7 @@ async function ensureBacklinkSnapshot(input: {
   const latest =
     await BacklinkSnapshotRepository.getLatestForProject(projectId);
   const latestMatchesDomain = latest !== null && latest.domain === domain;
-  if (latest && latestMatchesDomain && isSnapshotFresh(latest.capturedAt)) {
+  if (latest && latestMatchesDomain && !needsRefresh(latest)) {
     return getBacklinkSummary(projectId, domain);
   }
 
@@ -219,12 +271,17 @@ async function ensureBacklinkSnapshot(input: {
       target: normalized.apiTarget,
       includeSubdomains: normalized.includeSubdomains,
     });
+    const qualityReferringDomains = await fetchQualityReferringDomains(
+      dataforseo,
+      normalized,
+    );
     await BacklinkSnapshotRepository.insert({
       projectId,
       domain,
       rank: summary.rank ?? null,
       backlinks: summary.backlinks ?? null,
       referringDomains: summary.referring_domains ?? null,
+      qualityReferringDomains,
       brokenBacklinks: summary.broken_backlinks ?? null,
       newBacklinks: summary.new_backlinks ?? null,
       lostBacklinks: summary.lost_backlinks ?? null,
