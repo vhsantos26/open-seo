@@ -34,6 +34,11 @@ export const backlinkSnapshots = pgTable(
     lostBacklinks: bigint("lost_backlinks", { mode: "number" }),
     newReferringDomains: bigint("new_referring_domains", { mode: "number" }),
     lostReferringDomains: bigint("lost_referring_domains", { mode: "number" }),
+    // Referring domains under the spam-score cut the Backlinks page uses to hide
+    // spam. Null on snapshots taken before it was recorded, or if its call failed.
+    qualityReferringDomains: bigint("quality_referring_domains", {
+      mode: "number",
+    }),
     capturedAt: timestampColumn("captured_at").notNull().default(isoNow),
   },
   (table) => [

@@ -23,6 +23,9 @@ export const backlinkSnapshots = sqliteTable(
     lostBacklinks: integer("lost_backlinks"),
     newReferringDomains: integer("new_referring_domains"),
     lostReferringDomains: integer("lost_referring_domains"),
+    // Referring domains under the spam-score cut the Backlinks page uses to hide
+    // spam. Null on snapshots taken before it was recorded, or if its call failed.
+    qualityReferringDomains: integer("quality_referring_domains"),
     capturedAt: text("captured_at")
       .notNull()
       .default(sql`(current_timestamp)`),
