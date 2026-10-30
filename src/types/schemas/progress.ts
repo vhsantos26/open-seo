@@ -33,7 +33,7 @@ export const inspectPagesSchema = z.object({
   urls: z
     .array(z.url({ protocol: /^https?$/ }).max(2000))
     .min(1)
-    .max(20),
+    .max(100),
 });
 
 export const trackCompetitorSchema = z.object({
