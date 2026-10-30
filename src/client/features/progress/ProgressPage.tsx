@@ -13,6 +13,7 @@ import {
 } from "@/serverFunctions/progress";
 import { AnnotationsCard } from "./AnnotationsCard";
 import { BenchmarkCard } from "./BenchmarkCard";
+import { PagesTable } from "./PagesTable";
 import { PageProgressCard, type PageIndexing } from "./PageProgressCard";
 import { UnmappedKeywordsCard } from "./UnmappedKeywordsCard";
 
@@ -40,11 +41,18 @@ export function ProgressPage({ projectId }: { projectId: string }) {
   const inspectMutation = useMutation({
     mutationFn: () =>
       inspectProgressPages({
-        data: { projectId, urls: pageUrls.slice(0, 20) },
+        data: { projectId, urls: pageUrls },
       }),
     onSuccess: (results) => {
       setIndexing(Object.fromEntries(results.map((r) => [r.url, r])));
-      toast.success("Indexing checked");
+      const notIndexed = results.filter(
+        (r) => !r.error && r.verdict !== "PASS",
+      ).length;
+      toast.success(
+        notIndexed === 0
+          ? "All pages are indexed"
+          : `${notIndexed} of ${results.length} pages not indexed`,
+      );
     },
   });
 
@@ -99,7 +107,7 @@ export function ProgressPage({ projectId }: { projectId: string }) {
           }
         >
           <ScanSearch data-icon="inline-start" />
-          Check indexing
+          {inspectMutation.isPending ? "Checking…" : "Check indexing"}
         </Button>
       </div>
 
@@ -144,16 +152,11 @@ export function ProgressPage({ projectId }: { projectId: string }) {
       </div>
 
       {otherPages.length > 0 ? (
-        <div className="grid items-start gap-5 md:grid-cols-2 xl:grid-cols-3">
-          {otherPages.map((page) => (
-            <PageProgressCard
-              key={page.url}
-              page={page}
-              indexing={indexing[page.url]}
-              gscConnected={report.gscConnected}
-            />
-          ))}
-        </div>
+        <PagesTable
+          pages={otherPages}
+          indexing={indexing}
+          gscConnected={report.gscConnected}
+        />
       ) : null}
 
       <div

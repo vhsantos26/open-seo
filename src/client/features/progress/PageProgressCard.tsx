@@ -1,12 +1,7 @@
-import { ChevronDown, Link2 } from "lucide-react";
+import { Link2 } from "lucide-react";
 import { sort } from "remeda";
 import { Badge } from "@/client/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/client/components/ui/card";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/client/components/ui/collapsible";
 import {
   Table,
   TableBody,
@@ -34,7 +29,7 @@ export type PageIndexing = Awaited<
   ReturnType<typeof inspectProgressPages>
 >[number];
 
-function IndexingBadge({ indexing }: { indexing: PageIndexing }) {
+export function IndexingBadge({ indexing }: { indexing: PageIndexing }) {
   if (indexing.error) {
     return (
       <Badge variant="outline" title={indexing.error}>
@@ -45,7 +40,7 @@ function IndexingBadge({ indexing }: { indexing: PageIndexing }) {
   const indexed = indexing.verdict === "PASS";
   return (
     <Badge
-      variant={indexed ? "success" : "outline"}
+      variant={indexed ? "success" : "warning"}
       title={
         indexing.lastCrawlTime
           ? `Last crawl ${indexing.lastCrawlTime}`
@@ -57,7 +52,11 @@ function IndexingBadge({ indexing }: { indexing: PageIndexing }) {
   );
 }
 
-function KeywordsTable({ keywords }: { keywords: ProgressPage["keywords"] }) {
+export function KeywordsTable({
+  keywords,
+}: {
+  keywords: ProgressPage["keywords"];
+}) {
   return (
     <Table>
       <TableHeader>
@@ -109,11 +108,7 @@ function KeywordsTable({ keywords }: { keywords: ProgressPage["keywords"] }) {
   );
 }
 
-/**
- * One page's progress. The main page (the project's home) renders in full;
- * every other page is compact, with its keywords behind an expander so a long
- * list of pages stays scannable.
- */
+/** The main page's progress, in full. Other pages are rows in PagesTable. */
 export function PageProgressCard({
   page,
   indexing,
@@ -126,13 +121,7 @@ export function PageProgressCard({
   const { gsc, keywords, top10, lastChange } = page;
   const top10Change = top10.now - top10.before;
   const stats = (
-    <div
-      className={
-        page.isMain
-          ? "grid grid-cols-2 gap-4 xl:grid-cols-4"
-          : "grid grid-cols-2 gap-4"
-      }
-    >
+    <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
       <StatTile
         label="Clicks"
         value={gsc ? formatCount(gsc.clicks) : "—"}
@@ -166,30 +155,16 @@ export function PageProgressCard({
     </div>
   );
 
-  const keywordsBody =
-    keywords.length > 0 ? (
-      <KeywordsTable keywords={keywords} />
-    ) : (
-      <p className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Link2 className="size-4" />
-        No tracked keyword points at this page yet.
-      </p>
-    );
-
   return (
-    <Card size={page.isMain ? "lg" : "default"} className="h-full">
+    <Card size="lg" className="h-full">
       <CardHeader className="border-b">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <SafeExternalLink
             url={page.url}
             label={pageLabel(page.url)}
-            className={
-              page.isMain
-                ? "inline-flex items-center gap-1 text-lg font-semibold hover:underline"
-                : "inline-flex min-w-0 items-center gap-1 text-sm font-semibold hover:underline"
-            }
+            className="inline-flex items-center gap-1 text-lg font-semibold hover:underline"
           />
-          {page.isMain ? <Badge variant="soft">Main site</Badge> : null}
+          <Badge variant="soft">Main site</Badge>
           {indexing ? <IndexingBadge indexing={indexing} /> : null}
         </div>
         <p className="text-xs text-muted-foreground">
@@ -200,18 +175,13 @@ export function PageProgressCard({
       </CardHeader>
       <CardContent className="space-y-4">
         {stats}
-        {page.isMain ? (
-          keywordsBody
+        {keywords.length > 0 ? (
+          <KeywordsTable keywords={keywords} />
         ) : (
-          <Collapsible>
-            <CollapsibleTrigger className="group flex w-full items-center justify-between text-sm font-medium text-muted-foreground hover:text-foreground">
-              Keywords ({keywords.length})
-              <ChevronDown className="size-4 transition-transform group-data-[panel-open]:rotate-180" />
-            </CollapsibleTrigger>
-            <CollapsibleContent className="pt-3">
-              {keywordsBody}
-            </CollapsibleContent>
-          </Collapsible>
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Link2 className="size-4" />
+            No tracked keyword points at this page yet.
+          </p>
         )}
       </CardContent>
     </Card>
