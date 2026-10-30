@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { ChevronRight, Trash2 } from "lucide-react";
 import { CardShell } from "@/client/components/CardShell";
 import { Button } from "@/client/components/ui/button";
 import { Input } from "@/client/components/ui/input";
@@ -12,8 +12,99 @@ import {
 import { formatShortDate, pageLabel, todayInputValue } from "./progressFormat";
 
 type Report = Awaited<ReturnType<typeof getProgressReport>>;
+type Annotation = Report["annotations"][number];
 
 const WHOLE_SITE = "";
+
+/** Notes with the same date and text (a batch of pages published together)
+ *  fold into one entry, in the order the first of each appears. */
+function groupAnnotations(annotations: Annotation[]) {
+  const groups = new Map<string, Annotation[]>();
+  for (const annotation of annotations) {
+    const key = `${annotation.date}\n${annotation.note}`;
+    groups.set(key, [...(groups.get(key) ?? []), annotation]);
+  }
+  return [...groups.values()];
+}
+
+function ChangeRow({
+  group,
+  disabled,
+  onDelete,
+}: {
+  group: Annotation[];
+  disabled: boolean;
+  onDelete: (annotationId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [first] = group;
+  const single = group.length === 1;
+  return (
+    <li className="py-2 text-sm">
+      <div className="flex items-start gap-3">
+        <span className="w-20 shrink-0 whitespace-nowrap text-muted-foreground tabular-nums">
+          {formatShortDate(first.date)}
+        </span>
+        <span className="min-w-0 flex-1">
+          {first.note}
+          <span className="block truncate text-xs text-muted-foreground">
+            {single
+              ? first.url
+                ? pageLabel(first.url)
+                : "Whole site"
+              : `${group.length} pages`}
+          </span>
+        </span>
+        {single ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Delete note"
+            disabled={disabled}
+            onClick={() => onDelete(first.id)}
+          >
+            <Trash2 />
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`${open ? "Hide" : "Show"} ${group.length} pages`}
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+          >
+            <ChevronRight
+              className={`transition-transform ${open ? "rotate-90" : ""}`}
+            />
+          </Button>
+        )}
+      </div>
+      {open ? (
+        <ul className="mt-1 ml-[calc(5rem+0.75rem)] space-y-0.5">
+          {group.map((annotation) => (
+            <li
+              key={annotation.id}
+              className="flex items-center gap-2 text-xs text-muted-foreground"
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {annotation.url ? pageLabel(annotation.url) : "Whole site"}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Delete note"
+                disabled={disabled}
+                onClick={() => onDelete(annotation.id)}
+              >
+                <Trash2 />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
 
 export function AnnotationsCard({
   projectId,
@@ -107,30 +198,13 @@ export function AnnotationsCard({
         </p>
       ) : (
         <ul className="divide-y divide-border pt-2">
-          {annotations.map((annotation) => (
-            <li
-              key={annotation.id}
-              className="flex items-start gap-3 py-2 text-sm"
-            >
-              <span className="w-14 shrink-0 text-muted-foreground tabular-nums">
-                {formatShortDate(annotation.date)}
-              </span>
-              <span className="min-w-0 flex-1">
-                {annotation.note}
-                <span className="block truncate text-xs text-muted-foreground">
-                  {annotation.url ? pageLabel(annotation.url) : "Whole site"}
-                </span>
-              </span>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Delete note"
-                disabled={removeMutation.isPending}
-                onClick={() => removeMutation.mutate(annotation.id)}
-              >
-                <Trash2 />
-              </Button>
-            </li>
+          {groupAnnotations(annotations).map((group) => (
+            <ChangeRow
+              key={group[0].id}
+              group={group}
+              disabled={removeMutation.isPending}
+              onDelete={(annotationId) => removeMutation.mutate(annotationId)}
+            />
           ))}
         </ul>
       )}

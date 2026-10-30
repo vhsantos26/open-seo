@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { chunk } from "remeda";
 import { db } from "@/db";
 import { account } from "@/db/schema";
 import { GSC_OAUTH_PROVIDER_ID } from "@/shared/gsc";
@@ -28,6 +29,7 @@ import type {
 } from "@/server/lib/gscClient";
 
 const SITE_UNVERIFIED_PERMISSION = "siteUnverifiedUser";
+const INSPECT_CONCURRENCY = 5;
 
 type GscPerformanceResult = {
   siteUrl: string;
@@ -247,23 +249,28 @@ async function inspectUrls(input: {
     userId: connection.connectedByUserId,
     gscAccountId: connection.gscAccountId ?? undefined,
   });
-  const results: GscUrlInspection[] = [];
-  for (const url of input.urls) {
+  const inspectOne = async (url: string): Promise<GscUrlInspection> => {
     try {
       const result = await client.inspectUrl(
         connection.siteUrl,
         url,
         input.languageCode,
       );
-      results.push({ url, result });
+      return { url, result };
     } catch (error) {
       if (error instanceof GscTokenError) throw error;
-      results.push({
+      return {
         url,
         result: null,
         error: error instanceof Error ? error.message : "Inspection failed",
-      });
+      };
     }
+  };
+  // A few at a time: one at a time takes ~6 s per URL, which is minutes for a
+  // full site, and Google's quota allows far more in parallel.
+  const results: GscUrlInspection[] = [];
+  for (const batch of chunk(input.urls, INSPECT_CONCURRENCY)) {
+    results.push(...(await Promise.all(batch.map(inspectOne))));
   }
   return {
     siteUrl: connection.siteUrl,
