@@ -1,7 +1,7 @@
 /* eslint-disable max-lines, max-lines-per-function -- Domain Overview keeps page-only orchestration colocated to avoid fake indirection. */
 import { useCallback, useEffect, useMemo, useRef, type FormEvent } from "react";
 import { useForm, useStore } from "@tanstack/react-form";
-import { Globe, Info } from "lucide-react";
+import { Info } from "lucide-react";
 import { BackButton, PageHeader } from "@/client/components/PageHeader";
 import { Alert, AlertDescription } from "@/client/components/ui/alert";
 import { Badge } from "@/client/components/ui/badge";
@@ -25,12 +25,15 @@ import {
 import { useDomainOverviewQuery } from "@/client/features/domain/hooks/useDomainOverviewQuery";
 import { DomainOverviewLoadingState } from "@/client/features/domain/components/DomainOverviewLoadingState";
 import { TrackCompetitorButton } from "@/client/features/domain/components/TrackCompetitorButton";
+import { DomainProfileIllustration } from "@/client/components/EmptyIllustrations";
 import { RecentSearches } from "@/client/components/RecentSearches";
+import { SuggestedSites } from "@/client/features/projects/SuggestedSites";
 import { QueryError } from "@/client/components/QueryState";
 import { DomainSearchCard } from "@/client/features/domain/components/DomainSearchCard";
 import { KeywordsTab } from "@/client/features/domain/components/KeywordsTab";
 import { PagesTab } from "@/client/features/domain/components/PagesTab";
-import { StatTile } from "@/client/components/StatTile";
+import { HelpLabel } from "@/client/components/HelpLabel";
+import { MetricsTable } from "@/client/components/MetricsTable";
 import { SearchTabStrip } from "@/client/features/search-tabs/SearchTabStrip";
 import type { SearchTabInput } from "@/client/features/search-tabs/types";
 import { useSearchTabNavigation } from "@/client/features/search-tabs/useSearchTabNavigation";
@@ -551,7 +554,7 @@ export function DomainOverviewPage({
       <div className="mx-auto max-w-7xl space-y-4">
         <PageHeader
           title="Domain Overview"
-          description="Analyze any domain's SEO profile: traffic, keywords, and backlinks."
+          description="See what brings a site its search traffic."
           backLink={
             routeState.domain ? (
               <BackButton
@@ -596,8 +599,26 @@ export function DomainOverviewPage({
               items={state.history}
               loaded={state.historyLoaded}
               onRemove={state.removeHistoryItem}
-              emptyIcon={Globe}
-              emptyTitle="Enter a domain to get started"
+              emptyIllustration={<DomainProfileIllustration />}
+              emptyTitle="Look up your site or a competitor's"
+              emptyDescription="See how much search traffic they get, the keywords they rank for and their top pages."
+              emptyAction={
+                <SuggestedSites
+                  projectId={projectId}
+                  renderLink={(domain, props) => (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        navigate({
+                          search: (prev) => ({ ...prev, domain }),
+                          replace: true,
+                        })
+                      }
+                      {...props}
+                    />
+                  )}
+                />
+              }
               getTitle={(item) => item.domain}
               getSubtitle={(item) => RESEARCH_SCOPE_LABELS[item.scope]}
               renderLink={(item, props) => (
@@ -642,22 +663,38 @@ export function DomainOverviewPage({
                 ) : null}
               </div>
               <div className="px-4 pb-4">
-                <div className="grid grid-cols-1 gap-3 rounded-lg border border-border p-3 md:grid-cols-2">
-                  <StatTile
-                    label="Estimated Organic Traffic"
-                    value={formatMetric(
-                      state.overview.organicTraffic,
-                      state.overview.hasData,
-                    )}
-                    hint={overviewMetricsHint}
-                  />
-                  <StatTile
-                    label="Organic Keywords"
-                    value={formatMetric(
-                      state.overview.organicKeywords,
-                      state.overview.hasData,
-                    )}
-                    hint={overviewMetricsHint}
+                <div className="w-full max-w-xl rounded-lg border border-border p-3">
+                  <MetricsTable
+                    rows={[
+                      {
+                        label: overviewMetricsHint ? (
+                          <HelpLabel
+                            label="Estimated organic traffic"
+                            helpText={overviewMetricsHint}
+                          />
+                        ) : (
+                          "Estimated organic traffic"
+                        ),
+                        value: formatMetric(
+                          state.overview.organicTraffic,
+                          state.overview.hasData,
+                        ),
+                      },
+                      {
+                        label: overviewMetricsHint ? (
+                          <HelpLabel
+                            label="Organic keywords"
+                            helpText={overviewMetricsHint}
+                          />
+                        ) : (
+                          "Organic keywords"
+                        ),
+                        value: formatMetric(
+                          state.overview.organicKeywords,
+                          state.overview.hasData,
+                        ),
+                      },
+                    ]}
                   />
                 </div>
               </div>

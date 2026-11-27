@@ -8,6 +8,7 @@ import {
   text,
 } from "drizzle-orm/pg-core";
 import { PAGE_FETCH_CLASSES } from "@/shared/audit-fetch-class";
+import { AuditStatus } from "@/shared/audit-status";
 import { projects } from "./app.schema";
 
 // Timestamps are stored as *text* (same column shape as the SQLite schema); see
@@ -31,10 +32,15 @@ export const audits = pgTable(
     startedByUserId: text("started_by_user_id").notNull(),
     startUrl: text("start_url").notNull(),
     status: text("status", {
-      enum: ["running", "completed", "failed"],
+      enum: [
+        AuditStatus.Running,
+        AuditStatus.Completed,
+        AuditStatus.Refused,
+        AuditStatus.Failed,
+      ],
     })
       .notNull()
-      .default("running"),
+      .default(AuditStatus.Running),
     workflowInstanceId: text("workflow_instance_id"),
     // JSON config: { maxPages, lighthouseStrategy }
     config: text("config").notNull().default("{}"),
@@ -88,20 +94,16 @@ export const auditPages = pgTable(
     h4Count: integer("h4_count").notNull().default(0),
     h5Count: integer("h5_count").notNull().default(0),
     h6Count: integer("h6_count").notNull().default(0),
-    headingOrderJson: text("heading_order_json"),
     // Content
     wordCount: integer("word_count").notNull().default(0),
     // Images
     imagesTotal: integer("images_total").notNull().default(0),
     imagesMissingAlt: integer("images_missing_alt").notNull().default(0),
-    imagesJson: text("images_json"),
     // Links
     internalLinkCount: integer("internal_link_count").notNull().default(0),
     externalLinkCount: integer("external_link_count").notNull().default(0),
     // Structured data
     hasStructuredData: boolean("has_structured_data").notNull().default(false),
-    // Hreflang
-    hreflangTagsJson: text("hreflang_tags_json"),
     // Indexability
     isIndexable: boolean("is_indexable").notNull().default(true),
     // Indexability/canonical signals from response headers

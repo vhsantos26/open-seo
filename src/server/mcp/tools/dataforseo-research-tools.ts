@@ -1,5 +1,5 @@
 /* eslint-disable max-lines */
-import { sort } from "remeda";
+import { firstBy, sort } from "remeda";
 import { z } from "zod";
 import {
   createDataforseoClient,
@@ -14,8 +14,10 @@ import {
 } from "@/server/mcp/output-schemas";
 import { withMcpProjectAuth } from "@/server/mcp/project-auth";
 import {
+  formatMcpCell,
   formatMcpTable,
   readPath,
+  truncatedCell,
   type McpTableColumn,
 } from "@/server/mcp/table";
 import {
@@ -44,6 +46,8 @@ import {
   type ScopeFilter,
 } from "@/server/lib/dataforseo/researchScopeFilters";
 import { parseResearchTargetOrThrow } from "@/server/lib/domainUtils";
+import { assertLocalResearchLocation } from "@/server/features/keywords/services/research/local-volume";
+import { LOCAL_VOLUME_COST_USD, creditsForProviderUsd } from "@/shared/billing";
 import {
   RESEARCH_SCOPE_PARAM_DESCRIPTION,
   researchScopeSchema,
@@ -118,9 +122,20 @@ const localSerpNearSchema = z
       .min(4)
       .max(18)
       .optional()
-      .describe("Map zoom level (4-18). Higher zoom narrows the local area."),
+      .describe(
+        "Map zoom level (4-18). Higher zoom narrows the local area. Defaults to 12, a city-sized viewport; raise it for a neighbourhood, lower it for a metro.",
+      ),
   })
   .describe("Coordinate (and optional map zoom) the SERP is fetched from.");
+
+// A coordinate with no zoom lets DataForSEO infer one, and its guess is far too
+// tight for a city-level query: measured at San Jose's centre (37.3079,
+// -121.8917) on 2026-09-03, "bookkeeping services" returned 1 row with no zoom
+// and 20 at zoom 12; "plumber" returned 0 and 20. An agent reads that as "you
+// have no competitors". Zoom 12 is a ~12 km viewport at mid latitudes — one
+// city, not one neighbourhood and not a whole metro. 10 and 11 also return a
+// full page but span 47 km and 23 km, which drags in another city's businesses.
+const DEFAULT_LOCAL_SERP_ZOOM = 12;
 
 const domainTargetSchema = z
   .string()
@@ -213,14 +228,18 @@ const getRankedKeywordsInputSchema = {
     .describe("Rows to skip for pagination."),
 } as const;
 
-const searchLocalBusinessesInputSchema = {
+// Strict: the sibling local tools take `keyword`, and a stripped `keyword`
+// here returned every nearby business (hotels, hair salons) for "plumber".
+const searchLocalBusinessesInputSchema = z.strictObject({
   projectId: projectIdSchema,
   query: z
     .string()
     .min(1)
     .max(200)
     .optional()
-    .describe("Business name or title text to match."),
+    .describe(
+      "Text the business name must contain, such as a trade word. For a business type, use categories.",
+    ),
   near: nearSchema,
   categories: z
     .array(z.string().min(1).max(120))
@@ -264,7 +283,7 @@ const searchLocalBusinessesInputSchema = {
     .max(1000)
     .optional()
     .describe("Rows to skip for pagination."),
-} as const;
+});
 
 const localSearchTypeSchema = z.enum(["maps", "local_finder"]);
 
@@ -381,6 +400,13 @@ const getKeywordMetricsInputSchema = {
     .describe("Keywords to fetch metrics for (1-700)."),
   locationCode: locationCodeSchema.optional(),
   languageCode: languageCodeSchema.optional(),
+  locationName: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `Optional city, county, or region inside the country, for local metrics. Call search_serp_locations first and pass its locationName verbatim. Volume, trend, CPC, and competition then come from Google Ads for that area; KD and intent stay national. Adds ~${creditsForProviderUsd(LOCAL_VOLUME_COST_USD)} credits per 700 keywords, except in countries served from Google Ads data.`,
+    ),
   includeMonthlyTrends: z
     .boolean()
     .optional()
@@ -389,7 +415,7 @@ const getKeywordMetricsInputSchema = {
     .boolean()
     .optional()
     .describe(
-      "Refine search volumes with clickstream data, which disaggregates Google Ads' grouped close-variant volumes (plurals/misspellings). DOUBLES the credit cost of the call. Default false. No effect for countries served from Google Ads data.",
+      "Refine search volumes with clickstream data, which disaggregates Google Ads' grouped close-variant volumes (plurals/misspellings). DOUBLES the credit cost of the call. Default false. No effect for countries served from Google Ads data or with locationName.",
     ),
   sortBy: keywordMetricsSortSchema
     .optional()
@@ -407,7 +433,7 @@ type GetKeywordMetricsArgs = z.infer<
   z.ZodObject<typeof getKeywordMetricsInputSchema>
 >;
 type SearchLocalBusinessesArgs = z.infer<
-  z.ZodObject<typeof searchLocalBusinessesInputSchema>
+  typeof searchLocalBusinessesInputSchema
 >;
 type GetLocalSerpResultsArgs = z.infer<
   z.ZodObject<typeof getLocalSerpResultsInputSchema>
@@ -617,7 +643,10 @@ type RankedKeywordRow = {
   keyword: unknown;
   rank: unknown;
   volume: unknown;
+  kd: unknown;
+  intent: unknown;
   cpc: unknown;
+  traffic: unknown;
   url: unknown;
 };
 
@@ -630,7 +659,18 @@ function toRankedKeywordRow(item: unknown): RankedKeywordRow {
       readPath(item, "ranked_serp_element", "rank_absolute") ??
       readPath(item, "rank_absolute"),
     volume: readPath(item, "keyword_data", "keyword_info", "search_volume"),
+    kd:
+      readPath(
+        item,
+        "keyword_data",
+        "keyword_properties",
+        "keyword_difficulty",
+      ) ?? readPath(item, "keyword_data", "keyword_info", "keyword_difficulty"),
+    intent: readPath(item, "keyword_data", "search_intent_info", "main_intent"),
     cpc: readPath(item, "keyword_data", "keyword_info", "cpc"),
+    traffic:
+      readPath(item, "ranked_serp_element", "serp_item", "etv") ??
+      readPath(item, "ranked_serp_element", "etv"),
     url:
       readPath(item, "ranked_serp_element", "serp_item", "url") ??
       readPath(item, "ranked_serp_element", "url"),
@@ -641,7 +681,10 @@ const RANKED_KEYWORD_COLUMNS: McpTableColumn<RankedKeywordRow>[] = [
   { header: "keyword", value: (row) => row.keyword },
   { header: "rank", value: (row) => row.rank },
   { header: "volume", value: (row) => row.volume },
+  { header: "KD", value: (row) => row.kd },
+  { header: "intent", value: (row) => row.intent },
   { header: "CPC", value: (row) => row.cpc },
+  { header: "traffic", value: (row) => row.traffic },
   { header: "url", value: (row) => row.url },
 ];
 
@@ -700,8 +743,14 @@ const LOCAL_BUSINESS_COLUMNS: McpTableColumn<unknown>[] = [
   { header: "category", value: (row) => readPath(row, "category") },
   { header: "rating", value: (row) => readPath(row, "rating", "value") },
   { header: "reviews", value: (row) => readPath(row, "rating", "votes_count") },
+  { header: "claimed", value: (row) => readPath(row, "is_claimed") },
+  { header: "domain", value: (row) => readPath(row, "domain") },
   { header: "phone", value: (row) => readPath(row, "phone") },
   { header: "address", value: (row) => readPath(row, "address") },
+  // The ids are what get_business_profile / reviews / updates take, so a
+  // text-only client needs them here to follow the tool descriptions.
+  { header: "cid", value: (row) => readPath(row, "cid") },
+  { header: "place_id", value: (row) => readPath(row, "place_id") },
 ];
 
 const LOCAL_SERP_COLUMNS: McpTableColumn<unknown>[] = [
@@ -715,6 +764,8 @@ const LOCAL_SERP_COLUMNS: McpTableColumn<unknown>[] = [
   { header: "reviews", value: (row) => readPath(row, "rating", "votes_count") },
   { header: "phone", value: (row) => readPath(row, "phone") },
   { header: "address", value: (row) => readPath(row, "address") },
+  { header: "cid", value: (row) => readPath(row, "cid") },
+  { header: "place_id", value: (row) => readPath(row, "place_id") },
 ];
 
 // Q&A rows carry a ~300-char uule URL plus avatar/contributor links on every
@@ -747,8 +798,31 @@ function trimBusinessQuestionRow(row: unknown): Record<string, unknown> {
   return trimmed;
 }
 
+/** Answers without a timestamp sort last; ties keep the earlier answer. */
+function answerTimestamp(answer: unknown): string {
+  const at = readPath(answer, "timestamp");
+  return typeof at === "string" ? at : "";
+}
+
+// The answers are half of what this tool fetches, so the text table carries the
+// most recent one; the full thread stays in structuredContent. Provider order
+// isn't guaranteed, so pick by timestamp and fall back to the first answer.
+function latestAnswerText(row: unknown): unknown {
+  const items = readPath(row, "items");
+  if (!Array.isArray(items) || items.length === 0) return undefined;
+  const answers: unknown[] = items;
+  const latest = firstBy(answers, [answerTimestamp, "desc"]);
+  return (
+    readPath(latest, "answer_text") ?? readPath(latest, "original_answer_text")
+  );
+}
+
 const BUSINESS_QUESTION_COLUMNS: McpTableColumn<unknown>[] = [
-  { header: "question", value: (row) => readPath(row, "question_text") },
+  {
+    header: "question",
+    value: (row) =>
+      readPath(row, "question_text") ?? readPath(row, "original_question_text"),
+  },
   { header: "asked by", value: (row) => readPath(row, "profile_name") },
   { header: "when", value: (row) => readPath(row, "time_ago") },
   {
@@ -757,6 +831,11 @@ const BUSINESS_QUESTION_COLUMNS: McpTableColumn<unknown>[] = [
       const answers = readPath(row, "items");
       return Array.isArray(answers) ? answers.length : 0;
     },
+  },
+  {
+    header: "latest answer",
+    value: latestAnswerText,
+    format: truncatedCell(160),
   },
 ];
 
@@ -769,9 +848,34 @@ const SERP_COMPETITOR_COLUMNS: McpTableColumn<unknown>[] = [
   { header: "etv", value: (row) => readPath(row, "etv") },
 ];
 
+function monthOrdinal(entry: unknown): number {
+  const year = readPath(entry, "year");
+  const month = readPath(entry, "month");
+  return (
+    (typeof year === "number" ? year : 0) * 12 +
+    (typeof month === "number" ? month : 0)
+  );
+}
+
+/** Render monthly_searches as the last three volumes, oldest → newest
+ *  ("880 → 1300 → 1900"). Provider order isn't guaranteed, so sort by
+ *  year/month before slicing; the full series stays in structuredContent. */
+function monthlyTrendCell(value: unknown): string {
+  if (!Array.isArray(value) || value.length === 0) return "—";
+  return sort(value, (a, b) => monthOrdinal(a) - monthOrdinal(b))
+    .slice(-3)
+    .map((entry) => formatMcpCell(readPath(entry, "search_volume")))
+    .join(" → ");
+}
+
 const KEYWORD_METRIC_COLUMNS: McpTableColumn<unknown>[] = [
   { header: "keyword", value: (row) => readPath(row, "keyword") },
   { header: "volume", value: (row) => readPath(row, "search_volume") },
+  {
+    header: "trend",
+    value: (row) => readPath(row, "monthly_searches"),
+    format: monthlyTrendCell,
+  },
   { header: "KD", value: (row) => readPath(row, "keyword_difficulty") },
   { header: "CPC", value: (row) => readPath(row, "cpc") },
   { header: "competition", value: (row) => readPath(row, "competition") },
@@ -783,7 +887,7 @@ export const getRankedKeywordsTool = {
   config: {
     title: "Get ranked keywords",
     description:
-      "Returns market-specific keyword, URL, rank, search volume, CPC, intent, and traffic rows for a domain or page. Accepts country-level DataForSEO Labs location/language codes. Use this for strategy evidence; use get_domain_overview for aggregate domain footprint. Charges credits.",
+      "List the keywords a domain or page ranks for in one country, each with its ranking URL, rank, search volume, CPC, intent, and estimated traffic. Use it as evidence for strategy: which keywords and pages earn a site its search traffic. Filter by maxRank, minSearchVolume, or excludeBrandTerms. Uses credits. For a site's total traffic and keyword count, use get_domain_overview.",
     inputSchema: getRankedKeywordsInputSchema,
     outputSchema: z.looseObject({
       keywords: z.array(looseObjectOutputSchema),
@@ -841,7 +945,7 @@ export const getRankedKeywordsTool = {
     const text =
       rankedRows.length === 0
         ? `No ranked keyword rows for ${targetLabel}.`
-        : `Found ${rankedRows.length} ranked keyword rows for ${targetLabel}${keywords.totalCount != null ? ` (of ${keywords.totalCount} total)` : ""}:\n${formatMcpTable(rankedRows, RANKED_KEYWORD_COLUMNS)}`;
+        : `Found ${rankedRows.length} ranked keyword rows for ${targetLabel}${keywords.totalCount != null ? ` (of ${keywords.totalCount} total)` : ""}. Columns: KD = keyword difficulty (0-100), traffic = estimated monthly organic visits from this keyword; "—" = unavailable.\n${formatMcpTable(rankedRows, RANKED_KEYWORD_COLUMNS)}`;
     return mcpResponse({
       text,
       meta: buildProjectMeta(
@@ -865,7 +969,7 @@ export const searchLocalBusinessesTool = {
   config: {
     title: "Search local businesses",
     description:
-      "Searches local business listings near a coordinate, with optional rating, review-count, and claimed-status filters. Use this to find local business candidates, nearby competitors, or unclaimed listings; it does not run Maps rank checks or Q&A. Returns a compact row per business (identity, contact, rating, claim status); use get_business_profile for one business's full profile. Charges credits.",
+      "Search local business listings near a coordinate, with optional category, rating, review-count, and claimed-status filters. Use it to discover businesses you cannot name yet: local candidates, nearby competitors, or unclaimed listings. Uses credits. When you already know the business, use get_business_profile instead: it returns the full profile for less than half the credits, so it is also the cheap way to check whether a Google Business Profile exists. For Google Maps rankings, use get_local_serp_results or get_local_rank_grid.",
     inputSchema: searchLocalBusinessesInputSchema,
     outputSchema: z.looseObject({
       businesses: z.array(looseObjectOutputSchema),
@@ -898,7 +1002,9 @@ export const searchLocalBusinessesTool = {
       return mcpResponse({
         text:
           businesses.length === 0
-            ? header
+            ? args.query
+              ? `${header} Missing from the listings database doesn't mean the business has no Google Business Profile: get_business_profile with the name and \`near\` checks Google directly, for fewer credits.`
+              : header
             : `${header}\n${formatMcpTable(businesses, LOCAL_BUSINESS_COLUMNS)}`,
         meta: buildProjectMeta(context, args.projectId, `/p/${args.projectId}`),
         structuredContent: { businesses },
@@ -912,7 +1018,7 @@ export const getLocalSerpResultsTool = {
   config: {
     title: "Get local SERP results",
     description:
-      "Fetches one Google Maps or Local Finder SERP near a coordinate. Returns trimmed provider rows (identity, rank, rating, categories, hours) with rank fields intact; callers decide how to match a target business. Charges credits.",
+      "Get the Google Maps or Local Finder results for one keyword searched from a coordinate. Returns each business's identity, rank, rating, categories, and hours; matching a target business in the rows is up to the caller. Uses credits. To map one business's rank across an area, use get_local_rank_grid.",
     inputSchema: getLocalSerpResultsInputSchema,
     outputSchema: z.looseObject({
       results: z.array(looseObjectOutputSchema),
@@ -929,7 +1035,10 @@ export const getLocalSerpResultsTool = {
       const client = createDataforseoClient(context.billing);
       const rows = await client.serp.local({
         keyword: args.keyword,
-        locationCoordinate: formatLocalSerpCoordinate(args.near),
+        locationCoordinate: formatLocalSerpCoordinate({
+          ...args.near,
+          zoom: args.near.zoom ?? DEFAULT_LOCAL_SERP_ZOOM,
+        }),
         languageCode: args.languageCode ?? context.project.languageCode,
         searchType: args.searchType ?? "maps",
         device: args.device ?? "mobile",
@@ -958,7 +1067,7 @@ export const getGoogleBusinessQuestionsTool = {
   config: {
     title: "Get Google business questions",
     description:
-      "Fetches Google Business Profile questions and answers for one business (by businessName, cid, or placeId) near a coordinate. Run this only when Q&A evidence is needed. Charges credits.",
+      "Get the questions and answers on one business's Google Business Profile. Identify the business by exactly one of businessName, cid, or placeId, near a coordinate. Google stopped taking new questions in late 2025, so most profiles, especially small local businesses, have none. Run it only when Q&A evidence is needed. Uses credits, the same amount when nothing is found. For the profile itself, use get_business_profile.",
     inputSchema: getGoogleBusinessQuestionsInputSchema,
     outputSchema: z.looseObject({
       questions: z.array(looseObjectOutputSchema),
@@ -987,8 +1096,8 @@ export const getGoogleBusinessQuestionsTool = {
       return mcpResponse({
         text:
           questions.length === 0
-            ? header
-            : `${header}\n${formatMcpTable(questions, BUSINESS_QUESTION_COLUMNS)}`,
+            ? `${header} Google stopped taking new questions in late 2025, so an empty Q&A section is normal and not a gap to fix.`
+            : `${header} Columns: answers = answer count, latest answer = most recent answer text (truncated; every answer is in structuredContent).\n${formatMcpTable(questions, BUSINESS_QUESTION_COLUMNS)}`,
         meta: buildProjectMeta(context, args.projectId, `/p/${args.projectId}`),
         structuredContent: { questions },
       });
@@ -1001,7 +1110,7 @@ export const findSerpCompetitorsTool = {
   config: {
     title: "Find SERP competitors",
     description:
-      "Compares domains competing in Google results for a supplied keyword set in a country-level DataForSEO Labs market. Accepts location/language codes; not radius-based local SEO. Charges credits.",
+      "Find the domains that compete in Google results for a set of 1-100 keywords, sorted by visibility, estimated traffic, average position, or keyword count. Use it to learn who a site's real search competitors are for a topic. Works on a country-level market, not radius-based local SEO. Uses credits. For local competitors near a place, use search_local_businesses; for who ranks on one keyword, use get_serp_results.",
     inputSchema: findSerpCompetitorsInputSchema,
     outputSchema: z.looseObject({
       competitors: z.array(looseObjectOutputSchema),
@@ -1042,7 +1151,9 @@ export const findSerpCompetitorsTool = {
       return mcpResponse({
         text:
           sorted.length === 0
-            ? header
+            ? competitors.length === 0
+              ? `${header} There's no competitor data for these keywords in this market: get_keyword_metrics shows whether they have search volume, and get_serp_results reads one keyword's results live.`
+              : header
             : `${header}\n${formatMcpTable(sorted, SERP_COMPETITOR_COLUMNS)}`,
         meta: buildProjectMeta(
           context,
@@ -1060,7 +1171,7 @@ export const getKeywordMetricsTool = {
   config: {
     title: "Get keyword metrics",
     description:
-      "Hydrate up to 700 known keywords with search volume, keyword difficulty (KD), search intent, CPC, competition, and monthly trends in a single call. Use it to score candidate or known keywords — including Search Console striking-distance queries — by real demand and ranking difficulty. For countries served from Google Ads data (e.g. Iceland), KD and intent are null. Charges credits.",
+      "Get search volume, keyword difficulty (KD), search intent, CPC, competition, and monthly trends for up to 700 keywords you already have, nationally or for one city, county, or region (locationName). Use it to score candidate or known keywords, including Search Console striking-distance queries, by real demand and ranking difficulty. For countries served from Google Ads data (such as Iceland), KD and intent are null. Uses credits. To find new keyword ideas from a seed, use research_keywords.",
     inputSchema: getKeywordMetricsInputSchema,
     outputSchema: z.looseObject({
       keywords: z.array(looseObjectOutputSchema),
@@ -1077,11 +1188,15 @@ export const getKeywordMetricsTool = {
     // Assert against the RESOLVED pair: an explicit language with an omitted
     // location must validate against the project's default location.
     assertLanguageForLocation(locationCode, languageCode);
+    if (args.locationName) {
+      await assertLocalResearchLocation(locationCode, args.locationName);
+    }
     const client = createDataforseoClient(context.billing);
     const metrics = await fetchKeywordMetricsForList(client, {
       keywords: args.keywords,
       locationCode,
       languageCode,
+      locationName: args.locationName,
       includeClickstreamData: args.includeClickstreamData ?? false,
       creditFeature: "keyword_research",
     });
@@ -1096,7 +1211,19 @@ export const getKeywordMetricsTool = {
         : row,
     );
 
-    const header = `Fetched metrics for ${rows.length} keywords. Columns: volume = monthly searches, KD = keyword difficulty (0-100), CPC in USD, competition = paid competition (0-1); "—" = unavailable.`;
+    // A local request returns a row for every keyword, with null volume where
+    // Google Ads has none, so count keywords without volume, not missing rows.
+    const missingCount =
+      new Set(args.keywords.map((keyword) => keyword.trim().toLowerCase()))
+        .size - metrics.filter((row) => row.searchVolume != null).length;
+    const scope = args.locationName
+      ? ` Volume, trend, CPC, and competition are for ${args.locationName}; KD and intent are national.`
+      : "";
+    const header =
+      `Fetched metrics for ${rows.length} keywords.${scope} Columns: volume = monthly searches, trend = search volume for the last 3 months, oldest → newest, KD = keyword difficulty (0-100), CPC in USD, competition = paid competition (0-1); "—" = unavailable.` +
+      (missingCount > 0
+        ? ` ${missingCount} requested keyword${missingCount === 1 ? "" : "s"} returned no search volume, usually because it is too low to measure; research_keywords on a broader seed finds measurable variants.`
+        : "");
     return mcpResponse({
       text:
         rows.length === 0
@@ -1107,7 +1234,7 @@ export const getKeywordMetricsTool = {
         args.projectId,
         `/p/${args.projectId}/keywords`,
       ),
-      structuredContent: { keywords: rows },
+      structuredContent: { locationName: args.locationName, keywords: rows },
     });
   }),
 };

@@ -11,7 +11,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/client/components/ui/select";
-import type { searchPerformanceInputSchema } from "@/types/schemas/search-performance";
+import type {
+  searchPerformanceInputSchema,
+  SearchPerformanceSearch,
+} from "@/types/schemas/search-performance";
 
 const MATCH_ITEMS = [
   { value: "contains", label: "Contains" },
@@ -23,13 +26,31 @@ export type TextFilters = Pick<
   "pageFilter" | "queryFilter"
 >;
 
+/** The URL update for applied text filters. Google can't combine a query
+ *  filter with the brand split, so a query filter clears the brand. */
+export function textFilterSearch(
+  filters: TextFilters,
+): Partial<SearchPerformanceSearch> {
+  return {
+    page: undefined,
+    pageText: filters.pageFilter?.expression,
+    pageMatch: filters.pageFilter?.operator,
+    queryText: filters.queryFilter?.expression,
+    queryMatch: filters.queryFilter?.operator,
+    ...(filters.queryFilter ? { brand: undefined } : {}),
+  };
+}
+
 export function SearchPerformanceTextFilters({
   value,
+  showQuery,
   activeFilterCount,
   onApply,
   onReset,
 }: {
   value: TextFilters;
+  /** Discover and Google News have no queries to filter on. */
+  showQuery: boolean;
   activeFilterCount: number;
   onApply: (filters: TextFilters) => void;
   onReset: () => void;
@@ -144,7 +165,7 @@ export function SearchPerformanceTextFilters({
             />
           </div>
         </div>
-        <div className="space-y-1.5">
+        <div className={showQuery ? "space-y-1.5" : "hidden"}>
           <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Query
           </span>

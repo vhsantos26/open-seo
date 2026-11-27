@@ -8,6 +8,8 @@ import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   BROKEN_LINKS_SQL,
+  FRONTIER_CLAIM_SQL,
+  FRONTIER_DISCOVER_SQL,
   ORPHAN_PAGES_SQL,
   SCRATCHPAD_SCHEMA_SQL,
 } from "@/server/features/audit/scratchpad-sql";
@@ -229,5 +231,58 @@ describe("query plans", () => {
     ).toBe(true);
     // page_mirror is scanned once as the outer loop, never per inbound row.
     expect(detail.filter((line) => /SCAN m\b/.test(line))).toHaveLength(1);
+  });
+});
+
+describe("frontier claim", () => {
+  /** A link-found page at `depth`; with no depth, a sitemap seed. */
+  function addUrl(url: string, depth: number | null) {
+    db.prepare(
+      `INSERT INTO frontier (url, depth, source, in_sitemap) VALUES (?, ?, ?, ?)`,
+    ).run(
+      url,
+      depth,
+      depth === null ? "sitemap" : "link",
+      Number(depth === null),
+    );
+  }
+
+  function claim(pagesLeftAfterChunk: number, limit: number) {
+    return db
+      .prepare(FRONTIER_CLAIM_SQL)
+      .all(pagesLeftAfterChunk, limit)
+      .map((row) => row["url"]);
+  }
+
+  // Tag archives that link to each other kept a 10,000-page crawl on link-found
+  // pages to the end: it read 5,764 of them and never got to 207 sitemap pages.
+  it("holds back pages the sitemap doesn't list once the budget only covers the sitemap pages waiting", () => {
+    addUrl(START, 0);
+    addUrl("https://site.test/product", null);
+    addUrl("https://site.test/tag/a", 1);
+
+    expect(claim(1, 2)).toEqual([START, "https://site.test/tag/a"]);
+    expect(claim(0, 2)).toEqual([START, "https://site.test/product"]);
+  });
+});
+
+describe("frontier link discovery", () => {
+  // Seeding covers the whole sitemap, so most linked pages already have a
+  // sitemap row. A link must still give them a click depth and link-queue
+  // priority, or the deep-page check and breadth-first crawl order go blind.
+  it("gives a pending sitemap seed the link's depth and priority, keeping its sitemap flag", () => {
+    const url = "https://site.test/post";
+    db.prepare(
+      `INSERT INTO frontier (url, depth, source, in_sitemap) VALUES (?, NULL, 'sitemap', 1)`,
+    ).run(url);
+
+    db.prepare(FRONTIER_DISCOVER_SQL).run(url, 2);
+    db.prepare(FRONTIER_DISCOVER_SQL).run(url, 3);
+
+    expect(
+      db
+        .prepare(`SELECT depth, source, in_sitemap FROM frontier WHERE url = ?`)
+        .get(url),
+    ).toEqual({ depth: 2, source: "link", in_sitemap: 1 });
   });
 });

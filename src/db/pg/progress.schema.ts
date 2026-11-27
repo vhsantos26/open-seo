@@ -13,37 +13,6 @@ import { projects } from "./app.schema";
 const isoNow = sql`to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 const timestampColumn = (name: string) => text(name);
 
-// Point-in-time backlink profile summaries for the project's own domain,
-// written by the dashboard's visit-triggered refresh. DataForSEO's summary
-// already carries new/lost counts, so one snapshot renders a full card;
-// rows accumulate into history for future trend views. The domain is stored
-// per row so a later project-domain change doesn't rewrite history.
-export const backlinkSnapshots = pgTable(
-  "backlink_snapshots",
-  {
-    id: serial("id").primaryKey(),
-    projectId: text("project_id")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    domain: text("domain").notNull(),
-    rank: integer("rank"),
-    backlinks: bigint("backlinks", { mode: "number" }),
-    referringDomains: bigint("referring_domains", { mode: "number" }),
-    brokenBacklinks: bigint("broken_backlinks", { mode: "number" }),
-    newBacklinks: bigint("new_backlinks", { mode: "number" }),
-    lostBacklinks: bigint("lost_backlinks", { mode: "number" }),
-    newReferringDomains: bigint("new_referring_domains", { mode: "number" }),
-    lostReferringDomains: bigint("lost_referring_domains", { mode: "number" }),
-    capturedAt: timestampColumn("captured_at").notNull().default(isoNow),
-  },
-  (table) => [
-    index("backlink_snapshots_project_captured_idx").on(
-      table.projectId,
-      table.capturedAt,
-    ),
-  ],
-);
-
 // Dated notes on what changed on the site ("rewrote the intro", "published the
 // guide"), optionally tied to one page, so the progress view can line a change
 // up against the ranking and traffic that followed. `date` is the day the change

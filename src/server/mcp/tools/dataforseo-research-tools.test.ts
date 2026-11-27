@@ -1,3 +1,4 @@
+/* eslint-disable max-lines, max-lines-per-function -- every DataForSEO research tool is covered in this one spec, matching dataforseo-research-tools.ts */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { fetchKeywordMetricsForList as FetchKeywordMetricsForList } from "@/server/lib/dataforseo/keyword-metrics";
@@ -7,6 +8,7 @@ import { makeToolContext, textContent } from "./tool-test-support";
 const mocks = vi.hoisted(() => ({
   createDataforseoClient: vi.fn(),
   getProjectForOrganization: vi.fn(),
+  fetchSerpLocationsForCountry: vi.fn(),
 }));
 
 vi.mock("cloudflare:workers", () => ({
@@ -25,6 +27,10 @@ vi.mock("@/server/lib/dataforseo", async () => {
   };
 });
 
+vi.mock("@/server/lib/dataforseo/serp-locations", () => ({
+  fetchSerpLocationsForCountry: mocks.fetchSerpLocationsForCountry,
+}));
+
 vi.mock("@/server/features/projects/services/ProjectService", () => ({
   ProjectService: {
     getProjectForOrganization: mocks.getProjectForOrganization,
@@ -42,6 +48,9 @@ const usProjectRow = {
 describe("DataForSEO research MCP tools", () => {
   beforeEach(() => {
     mocks.getProjectForOrganization.mockResolvedValue(usProjectRow);
+    mocks.fetchSerpLocationsForCountry.mockResolvedValue([
+      { locationName: "San Jose,California,United States" },
+    ]);
   });
 
   it("searches local businesses, rounding fractional radii and trimming rows", async () => {
@@ -165,6 +174,29 @@ describe("DataForSEO research MCP tools", () => {
     ]);
     expect(textContent(result)).toContain("rank | title | rating");
     expect(textContent(result)).toContain("Acme Cafe");
+  });
+
+  // EVE-67: a coordinate with no zoom lets DataForSEO pick one, and its guess
+  // returned 1 row for "bookkeeping services" at this exact coordinate — the
+  // agent then told the customer they had no competitors.
+  it("falls back to a city-sized zoom when the caller gives no zoom", async () => {
+    const local = vi.fn().mockResolvedValue([]);
+    mocks.createDataforseoClient.mockReturnValue({ serp: { local } });
+
+    await researchTools.getLocalSerpResultsTool.handler(
+      {
+        projectId: "project_1",
+        keyword: "bookkeeping services",
+        near: { latitude: 37.3079, longitude: -121.8917 },
+      },
+      toolContext,
+    );
+
+    expect(local).toHaveBeenCalledWith(
+      expect.objectContaining({
+        locationCoordinate: "37.3079,-121.8917,12z",
+      }),
+    );
   });
 
   it("fetches Google Business Q&A as an explicit tool", async () => {
@@ -304,8 +336,90 @@ describe("DataForSEO research MCP tools", () => {
       main_intent: "commercial",
     });
     const out = textContent(result);
-    expect(out).toContain("keyword | volume | KD | CPC | competition | intent");
+    expect(out).toContain(
+      "keyword | volume | trend | KD | CPC | competition | intent",
+    );
     expect(out).toContain("seo automation");
+  });
+
+  it("scopes volume and CPC to a city while KD and intent stay national", async () => {
+    const keywordOverview = vi.fn().mockResolvedValue([
+      {
+        keyword: "headliner repair",
+        keyword_info: { search_volume: 5400, cpc: 3.1 },
+        keyword_properties: { keyword_difficulty: 22 },
+        search_intent_info: { main_intent: "commercial" },
+      },
+    ]);
+    const adsSearchVolume = vi
+      .fn()
+      .mockResolvedValue([
+        { keyword: "headliner repair", search_volume: 90, cpc: 14.2 },
+      ]);
+    mocks.createDataforseoClient.mockReturnValue({
+      labs: { keywordOverview },
+      keywords: { adsSearchVolume },
+    });
+
+    const result = await researchTools.getKeywordMetricsTool.handler(
+      {
+        projectId: "project_1",
+        // Google Ads omits the second keyword for this city.
+        keywords: ["headliner repair", "headliner repair nearby"],
+        locationName: "San Jose,California,United States",
+        includeClickstreamData: true,
+      },
+      toolContext,
+    );
+
+    expect(adsSearchVolume).toHaveBeenCalledWith(
+      expect.objectContaining({
+        locationName: "San Jose,California,United States",
+      }),
+    );
+    // Labs supplies only KD and intent here, so clickstream would be paid
+    // for and discarded.
+    expect(keywordOverview).toHaveBeenCalledWith(
+      expect.objectContaining({ includeClickstreamData: false }),
+    );
+    const rows = z
+      .object({ keywords: z.array(z.record(z.string(), z.unknown())) })
+      .passthrough()
+      .parse(result.structuredContent).keywords;
+    expect(rows[0]).toMatchObject({
+      keyword: "headliner repair",
+      search_volume: 90,
+      cpc: 14.2,
+      keyword_difficulty: 22,
+      main_intent: "commercial",
+    });
+    const text = textContent(result);
+    expect(text).toContain(
+      "Volume, trend, CPC, and competition are for San Jose,California,United States; KD and intent are national.",
+    );
+    expect(text).toContain("1 requested keyword returned no search volume");
+  });
+
+  it("rejects an unknown area before any paid call", async () => {
+    const keywordOverview = vi.fn();
+    const adsSearchVolume = vi.fn();
+    mocks.createDataforseoClient.mockReturnValue({
+      labs: { keywordOverview },
+      keywords: { adsSearchVolume },
+    });
+
+    await expect(
+      researchTools.getKeywordMetricsTool.handler(
+        {
+          projectId: "project_1",
+          keywords: ["headliner repair"],
+          locationName: "San Jose, CA",
+        },
+        toolContext,
+      ),
+    ).rejects.toMatchObject({ code: "UNKNOWN_LOCATION" });
+    expect(keywordOverview).not.toHaveBeenCalled();
+    expect(adsSearchVolume).not.toHaveBeenCalled();
   });
 
   it("serves a Google-Ads-only location (Iceland) from adsSearchVolume without KD/intent", async () => {

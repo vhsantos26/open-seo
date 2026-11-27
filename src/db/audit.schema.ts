@@ -7,6 +7,7 @@ import {
 } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 import { PAGE_FETCH_CLASSES } from "@/shared/audit-fetch-class";
+import { AuditStatus } from "@/shared/audit-status";
 import { projects } from "./app.schema";
 
 // ============================================================================
@@ -24,10 +25,15 @@ export const audits = sqliteTable(
     startedByUserId: text("started_by_user_id").notNull(),
     startUrl: text("start_url").notNull(),
     status: text("status", {
-      enum: ["running", "completed", "failed"],
+      enum: [
+        AuditStatus.Running,
+        AuditStatus.Completed,
+        AuditStatus.Refused,
+        AuditStatus.Failed,
+      ],
     })
       .notNull()
-      .default("running"),
+      .default(AuditStatus.Running),
     workflowInstanceId: text("workflow_instance_id"),
     // JSON config: { maxPages, lighthouseStrategy }
     config: text("config").notNull().default("{}"),
@@ -83,13 +89,11 @@ export const auditPages = sqliteTable(
     h4Count: integer("h4_count").notNull().default(0),
     h5Count: integer("h5_count").notNull().default(0),
     h6Count: integer("h6_count").notNull().default(0),
-    headingOrderJson: text("heading_order_json"),
     // Content
     wordCount: integer("word_count").notNull().default(0),
     // Images
     imagesTotal: integer("images_total").notNull().default(0),
     imagesMissingAlt: integer("images_missing_alt").notNull().default(0),
-    imagesJson: text("images_json"),
     // Links
     internalLinkCount: integer("internal_link_count").notNull().default(0),
     externalLinkCount: integer("external_link_count").notNull().default(0),
@@ -97,8 +101,6 @@ export const auditPages = sqliteTable(
     hasStructuredData: integer("has_structured_data", { mode: "boolean" })
       .notNull()
       .default(false),
-    // Hreflang
-    hreflangTagsJson: text("hreflang_tags_json"),
     // Indexability
     isIndexable: integer("is_indexable", { mode: "boolean" })
       .notNull()

@@ -1,7 +1,9 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
 import type { InferInsertModel } from "drizzle-orm";
 import { db } from "@/db";
-import { rankCheckRuns, rankSnapshots } from "@/db/schema";
+import { rankCheckRuns, rankSnapshots, rankTrackingConfigs } from "@/db/schema";
+import { toRankTrackingTimestamp } from "@/server/features/rank-tracking/rankTrackingTimestamps";
+import { devicesCount } from "@/shared/rank-tracking";
 import { executeInBatches } from "@/db/runBatch";
 
 // ---------------------------------------------------------------------------
@@ -31,25 +33,26 @@ export async function tryCreateRun(data: {
   return Boolean(inserted[0]);
 }
 
+/**
+ * Updates a run that is still pending or running, and reports whether it did.
+ * A completed or failed run is final: the stale-run cleanup and the workflow
+ * can race, and the loser must not bring a finished run back to life.
+ */
 export async function updateRun(
   runId: string,
   data: Partial<InferInsertModel<typeof rankCheckRuns>>,
 ) {
-  await db.update(rankCheckRuns).set(data).where(eq(rankCheckRuns.id, runId));
-}
-
-/**
- * Record why a keyword failed, first reason wins. Batch steps call this on
- * each rejection so finalize can show the vendor's actual message instead of
- * a generic "could not be checked".
- */
-export async function setRunErrorIfEmpty(runId: string, errorMessage: string) {
-  await db
+  const updated = await db
     .update(rankCheckRuns)
-    .set({ errorMessage })
+    .set(data)
     .where(
-      and(eq(rankCheckRuns.id, runId), isNull(rankCheckRuns.errorMessage)),
-    );
+      and(
+        eq(rankCheckRuns.id, runId),
+        inArray(rankCheckRuns.status, ["pending", "running"]),
+      ),
+    )
+    .returning({ id: rankCheckRuns.id });
+  return updated.length > 0;
 }
 
 export async function getRunById(runId: string) {
@@ -89,6 +92,34 @@ export async function getActiveRunForConfig(configId: string) {
   return rows[0] ?? null;
 }
 
+/**
+ * Task units (keywords × devices) of every check still pending or running,
+ * across all organizations. Runs started before `since` are left out: a stuck
+ * run stays "running" until its tracker is checked again.
+ */
+export async function getTaskUnitsInFlight(since: Date) {
+  const runs = await db
+    .select({
+      keywordsTotal: rankCheckRuns.keywordsTotal,
+      devices: rankTrackingConfigs.devices,
+    })
+    .from(rankCheckRuns)
+    .innerJoin(
+      rankTrackingConfigs,
+      eq(rankCheckRuns.configId, rankTrackingConfigs.id),
+    )
+    .where(
+      and(
+        inArray(rankCheckRuns.status, ["pending", "running"]),
+        gte(rankCheckRuns.startedAt, toRankTrackingTimestamp(since)),
+      ),
+    );
+  return runs.reduce(
+    (units, run) => units + run.keywordsTotal * devicesCount(run.devices),
+    0,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Snapshots
 // ---------------------------------------------------------------------------
@@ -115,6 +146,65 @@ export async function insertSnapshots(
           rankSnapshots.device,
         ],
       }),
+  );
+}
+
+/** Insert snapshots, replacing the result of any already saved for the pair. */
+export async function upsertSnapshots(
+  snapshots: Array<
+    Omit<InferInsertModel<typeof rankSnapshots>, "id" | "checkedAt">
+  >,
+) {
+  await executeInBatches(snapshots, (tx, snapshot) =>
+    tx
+      .insert(rankSnapshots)
+      .values(snapshot)
+      .onConflictDoUpdate({
+        target: [
+          rankSnapshots.runId,
+          rankSnapshots.trackingKeywordId,
+          rankSnapshots.device,
+        ],
+        set: {
+          position: snapshot.position,
+          url: snapshot.url,
+          serpFeatures: snapshot.serpFeatures,
+        },
+      }),
+  );
+}
+
+/** Replace the ranking URL of saved snapshots. */
+export async function updateSnapshotUrls(
+  updates: Array<{ id: number; url: string }>,
+) {
+  await executeInBatches(updates, (tx, { id, url }) =>
+    tx.update(rankSnapshots).set({ url }).where(eq(rankSnapshots.id, id)),
+  );
+}
+
+/**
+ * Delete "not found" snapshots, matched by run/keyword/device. A row that holds
+ * a position is left alone.
+ */
+export async function deleteNotFoundSnapshots(
+  keys: Array<{
+    runId: string;
+    trackingKeywordId: string;
+    device: "desktop" | "mobile";
+  }>,
+) {
+  await executeInBatches(keys, (tx, key) =>
+    tx
+      .delete(rankSnapshots)
+      .where(
+        and(
+          eq(rankSnapshots.runId, key.runId),
+          eq(rankSnapshots.trackingKeywordId, key.trackingKeywordId),
+          eq(rankSnapshots.device, key.device),
+          isNull(rankSnapshots.position),
+        ),
+      ),
   );
 }
 

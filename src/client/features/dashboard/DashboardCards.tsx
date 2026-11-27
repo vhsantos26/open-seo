@@ -1,9 +1,22 @@
+import { GoogleSearchConsoleLogo } from "@/client/features/integrations/GoogleProductLogos";
+import { startAudit } from "@/serverFunctions/audit";
+import { EmptyState } from "@/client/components/EmptyState";
+import { QueryError } from "@/client/components/QueryState";
+import { Globe, LoaderCircle, ScanSearch } from "lucide-react";
 import { CardShell } from "@/client/components/CardShell";
+import { Progress } from "@/client/components/ui/progress";
 import { Button } from "@/client/components/ui/button";
 import { Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useState } from "react";
 import { Check } from "lucide-react";
 import { GoogleConnectionCard } from "@/client/features/integrations/GoogleConnectionCard";
+import { SeverityBadge } from "@/client/features/audit/shared";
 import { AUDIT_ISSUE_TYPES } from "@/shared/audit-issues";
 
 import {
@@ -12,18 +25,31 @@ import {
   formatPosition,
 } from "@/client/features/search-performance/SearchPerformanceColumns";
 import { getSearchPerformanceReport } from "@/serverFunctions/searchPerformance";
+import { DateRangeSelect } from "@/client/features/search-performance/SearchPerformanceSelects";
 import {
-  EmptyCardBody,
+  cardMetaClass,
+  cardTableClass,
   formatDay,
   moreDetailsClass,
-  newLost,
-  StatGridSkeleton,
 } from "@/client/features/dashboard/cardParts";
-import { StatTile } from "@/client/components/StatTile";
-import type {
-  DashboardAuditSummary,
-  DashboardBacklinkSummary,
-} from "@/server/features/dashboard/services/DashboardService";
+import {
+  MetricRow,
+  MetricsSkeleton,
+  TrendChart,
+} from "@/client/features/dashboard/DashboardMetrics";
+import { percentChange } from "@/client/components/MetricsTable";
+import type { ChartConfig } from "@/client/components/ui/chart";
+import type { SearchPerformanceDateRange } from "@/types/schemas/search-performance";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/client/components/ui/table";
+import type { DashboardAuditSummary } from "@/server/features/dashboard/services/DashboardService";
+import { AuditStatus } from "@/shared/audit-status";
 
 // Plain string-keyed view of the registry: issue types from the DB are not
 // statically guaranteed to be registry keys.
@@ -31,20 +57,29 @@ const issueTitles: Record<string, string | undefined> = Object.fromEntries(
   Object.entries(AUDIT_ISSUE_TYPES).map(([key, value]) => [key, value.title]),
 );
 
+const gscChartConfig = {
+  clicks: { label: "Clicks", color: "var(--chart-1)" },
+  impressions: { label: "Impressions", color: "var(--chart-2)" },
+} satisfies ChartConfig;
+
 export function GscCard({
   projectId,
   connected,
+  siteUrl,
 }: {
   projectId: string;
   connected: boolean;
+  siteUrl: string | null;
 }) {
+  const [dateRange, setDateRange] =
+    useState<SearchPerformanceDateRange>("last_28_days");
   const reportQuery = useQuery({
-    queryKey: ["dashboardGscReport", projectId],
+    queryKey: ["dashboardGscReport", projectId, siteUrl, dateRange],
     queryFn: () =>
-      getSearchPerformanceReport({
-        data: { projectId, dateRange: "last_28_days" },
-      }),
+      getSearchPerformanceReport({ data: { projectId, dateRange } }),
     enabled: connected,
+    staleTime: 10 * 60_000,
+    placeholderData: keepPreviousData,
   });
   const report = reportQuery.data;
 
@@ -60,15 +95,23 @@ export function GscCard({
 
   return (
     <CardShell
-      title="Search performance"
-      stamp="Google Search Console · last 28 days"
+      title="GSC"
+      icon={<GoogleSearchConsoleLogo className="size-5" />}
+      titleInfo={
+        <DateRangeSelect
+          value={dateRange}
+          onChange={setDateRange}
+          triggerClassName="border-transparent bg-transparent pl-2 pr-1.5 font-normal text-muted-foreground hover:bg-foreground/5"
+        />
+      }
       action={
         <Link
           to="/p/$projectId/search-performance"
           params={{ projectId }}
+          search={{ range: dateRange }}
           className={moreDetailsClass}
         >
-          More details
+          View GSC insights
         </Link>
       }
     >
@@ -77,90 +120,210 @@ export function GscCard({
           Couldn&rsquo;t load Search Console data. Try again shortly.
         </p>
       ) : !report ? (
-        <StatGridSkeleton />
+        <MetricsSkeleton />
       ) : (
-        <div className="grid grid-cols-2 gap-3">
-          <StatTile
-            label="Clicks"
-            value={formatCount(report.totals.clicks)}
-            delta={{
-              current: report.totals.clicks,
-              previous: report.prevTotals.clicks,
-            }}
+        <div
+          className={`flex flex-1 flex-col gap-4 transition-opacity ${reportQuery.isPlaceholderData ? "opacity-50" : ""}`}
+        >
+          <MetricRow
+            metrics={[
+              {
+                label: "Clicks",
+                value: formatCount(report.totals.clicks),
+                change: percentChange(
+                  report.totals.clicks,
+                  report.prevTotals.clicks,
+                ),
+                dotClass: "bg-chart-1",
+              },
+              {
+                label: "Impressions",
+                value: formatCount(report.totals.impressions),
+                change: percentChange(
+                  report.totals.impressions,
+                  report.prevTotals.impressions,
+                ),
+                dotClass: "bg-chart-2",
+              },
+              {
+                label: "Click-through rate",
+                value: formatCtr(report.totals.ctr),
+                change: null,
+              },
+              {
+                label: "Average position",
+                value: formatPosition(report.totals.position),
+                change: null,
+              },
+            ]}
           />
-          <StatTile
-            label="Impressions"
-            value={formatCount(report.totals.impressions)}
-            delta={{
-              current: report.totals.impressions,
-              previous: report.prevTotals.impressions,
-            }}
-          />
-          <StatTile label="CTR" value={formatCtr(report.totals.ctr)} />
-          <StatTile
-            label="Avg position"
-            value={formatPosition(report.totals.position)}
-          />
+          {report.totals.impressions > 0 ? (
+            <TrendChart config={gscChartConfig} data={report.trend} />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No search data for this period yet.
+            </p>
+          )}
         </div>
       )}
     </CardShell>
   );
 }
 
+const siteHealthIcon = <Globe className="size-5" />;
+
 export function AuditHealthCard({
   projectId,
   audit,
+  domain,
 }: {
   projectId: string;
   audit: DashboardAuditSummary | null;
+  domain: string | null;
 }) {
-  if (!audit) {
+  const queryClient = useQueryClient();
+  const scan = useMutation({
+    mutationFn: () =>
+      startAudit({
+        data: {
+          projectId,
+          startUrl: `https://${domain}`,
+          maxPages: 50,
+          renderJavaScript: true,
+        },
+      }),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({
+        queryKey: ["dashboardOverview", projectId],
+      }),
+    meta: { errorToast: false },
+  });
+  if (!audit)
     return (
-      <CardShell title="Site audit">
-        <EmptyCardBody
-          message="Crawl your site for broken links, missing tags and indexability problems."
-          cta={
-            <Button
-              size="lg"
-              nativeButton={false}
-              render={<Link to="/p/$projectId/audit" params={{ projectId }} />}
-            >
-              Run an audit
-            </Button>
+      <CardShell title="Site health" icon={siteHealthIcon}>
+        <EmptyState
+          variant="plain"
+          icon={ScanSearch}
+          title="Find what's holding your website back"
+          description="Scan up to 50 pages for broken links, missing titles and pages Google can't index."
+          action={
+            <>
+              {domain ? (
+                <Button disabled={scan.isPending} onClick={() => scan.mutate()}>
+                  {scan.isPending ? "Starting scan…" : "Scan my website"}
+                </Button>
+              ) : (
+                <Button
+                  nativeButton={false}
+                  render={
+                    <Link to="/p/$projectId/settings" params={{ projectId }} />
+                  }
+                >
+                  Add your website
+                </Button>
+              )}
+              {scan.isError && (
+                <QueryError
+                  error={scan.error}
+                  fallback="Could not start your scan"
+                />
+              )}
+            </>
           }
         />
+      </CardShell>
+    );
+
+  if (audit.status === AuditStatus.Running) {
+    const isLighthouse = audit.currentPhase === "lighthouse";
+    const isFinalizing = audit.currentPhase === "finalizing";
+    const checked = isLighthouse
+      ? audit.lighthouseCompleted + audit.lighthouseFailed
+      : audit.pagesCrawled;
+    const total = isLighthouse ? audit.lighthouseTotal : audit.pagesTotal;
+    // A running crawl has at most a partial issue list, and an empty one is
+    // not the same as a healthy site, so show progress instead.
+    return (
+      <CardShell
+        title="Site health"
+        icon={siteHealthIcon}
+        action={
+          <Link
+            to="/p/$projectId/audit"
+            params={{ projectId }}
+            search={{ auditId: audit.id }}
+            className={moreDetailsClass}
+          >
+            View progress
+          </Link>
+        }
+      >
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 py-6 text-center">
+          <LoaderCircle className="size-7 animate-spin text-muted-foreground" />
+          <h3 className="font-medium">
+            {isLighthouse
+              ? "Running Lighthouse checks"
+              : isFinalizing
+                ? "Preparing your results"
+                : audit.currentPhase === "discovery"
+                  ? "Finding pages to scan"
+                  : "Scanning your website"}
+          </h3>
+          {!isFinalizing && (
+            <Progress
+              className="w-full max-w-xs"
+              value={checked}
+              max={total || 1}
+              aria-label={isLighthouse ? "Lighthouse checks" : "Pages crawled"}
+            />
+          )}
+          <p className="text-sm text-muted-foreground tabular-nums">
+            {isLighthouse
+              ? `${checked} of ${total} checks${audit.lighthouseFailed > 0 ? ` (${audit.lighthouseFailed} failed)` : ""}`
+              : isFinalizing
+                ? `${audit.pagesCrawled} pages crawled. Finishing your report.`
+                : `${checked} of up to ${total} pages crawled`}
+          </p>
+        </div>
       </CardShell>
     );
   }
 
   return (
     <CardShell
-      title="Site audit"
-      stamp={`Site audit · ${
-        audit.status === "completed"
-          ? `crawled ${audit.pagesCrawled} pages · ${formatDay(audit.startedAt)}`
-          : audit.status === "running"
-            ? "crawl in progress"
-            : "last crawl failed"
-      }`}
+      title="Site health"
+      icon={siteHealthIcon}
+      titleInfo={
+        audit.status === AuditStatus.Completed ? (
+          <span className={cardMetaClass}>
+            {audit.pagesCrawled} pages checked · {formatDay(audit.startedAt)}
+          </span>
+        ) : null
+      }
       action={
         <Link
           to="/p/$projectId/audit"
           params={{ projectId }}
+          search={{ auditId: audit.id, tab: "issues" }}
           className={moreDetailsClass}
         >
-          More details
+          Review issues
         </Link>
       }
     >
-      {audit.status === "running" ? (
-        // A running crawl has at most a partial issue list, and an empty one
-        // is not the same as a healthy site.
-        <p className="text-sm text-muted-foreground">
-          Issues appear here when the crawl finishes.
+      {audit.status === AuditStatus.Failed && (
+        <p className="mb-4 text-sm text-destructive">
+          The latest scan didn’t finish. Review the results or try again.
         </p>
-      ) : audit.topIssues.length === 0 ? (
-        audit.status === "completed" ? (
+      )}
+      {audit.status === AuditStatus.Refused && (
+        <p className="mb-4 text-sm text-destructive">
+          Your site refused our crawler, so the latest scan couldn’t reach any
+          pages.
+        </p>
+      )}
+      {audit.topIssues.length === 0 ? (
+        audit.status === AuditStatus.Completed ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Check className="size-4 text-success" />
             No issues found — your site looks healthy.
@@ -171,119 +334,37 @@ export function AuditHealthCard({
           </p>
         )
       ) : (
-        <ul className="space-y-2">
-          {audit.topIssues.map((issue) => (
-            <li
-              key={issue.issueType}
-              className="flex items-center justify-between gap-2 text-sm"
-            >
-              <span className="flex min-w-0 items-center gap-2">
-                <span
-                  className={`size-2 shrink-0 rounded-full ${
-                    issue.severity === "critical"
-                      ? "bg-destructive"
-                      : issue.severity === "warning"
-                        ? "bg-warning"
-                        : "bg-muted-foreground/30"
-                  }`}
-                />
-                <span className="truncate">
+        <Table className={cardTableClass}>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Issue</TableHead>
+              <TableHead>Severity</TableHead>
+              <TableHead className="text-right">Pages affected</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {audit.topIssues.map((issue) => (
+              <TableRow key={issue.issueType}>
+                <TableCell>
                   {issueTitles[issue.issueType] ?? issue.issueType}
-                </span>
-              </span>
-              <span className="shrink-0 tabular-nums text-muted-foreground">
-                {issue.count} {issue.count === 1 ? "page" : "pages"}
-              </span>
-            </li>
-          ))}
-          {audit.totalIssueTypes > audit.topIssues.length ? (
-            <li className="text-xs text-muted-foreground">
-              + {audit.totalIssueTypes - audit.topIssues.length} more issue
-              {audit.totalIssueTypes - audit.topIssues.length === 1 ? "" : "s"}
-            </li>
-          ) : null}
-          {/* A failed crawl keeps what it found, as the audit page does. */}
-          {audit.status !== "completed" ? (
-            <li className="text-xs text-muted-foreground">
-              From the pages crawled before the audit stopped.
-            </li>
-          ) : null}
-        </ul>
+                </TableCell>
+                <TableCell>
+                  <SeverityBadge severity={issue.severity}>
+                    {issue.severity === "critical"
+                      ? "Critical"
+                      : issue.severity === "warning"
+                        ? "Warning"
+                        : "Info"}
+                  </SeverityBadge>
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {issue.count}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       )}
-    </CardShell>
-  );
-}
-
-export function BacklinkPulseCard({
-  projectId,
-  backlinks,
-  refreshing,
-}: {
-  projectId: string;
-  backlinks: DashboardBacklinkSummary | null;
-  refreshing: boolean;
-}) {
-  if (!backlinks && refreshing) {
-    return (
-      <CardShell title="Backlink pulse" stamp="Taking your first snapshot…">
-        <StatGridSkeleton />
-      </CardShell>
-    );
-  }
-
-  if (!backlinks) {
-    return (
-      <CardShell title="Backlink pulse">
-        <p className="text-sm text-muted-foreground">
-          We&rsquo;ll snapshot who links to your domain — nothing to set up.
-        </p>
-      </CardShell>
-    );
-  }
-
-  return (
-    <CardShell
-      title="Backlink pulse"
-      stamp={`Backlinks · snapshot ${formatDay(backlinks.capturedAt)}${
-        refreshing ? " · refreshing…" : ""
-      }`}
-      action={
-        <Link
-          to="/p/$projectId/backlinks"
-          params={{ projectId }}
-          search={{ target: backlinks.domain, scope: "domain" }}
-          className={moreDetailsClass}
-        >
-          More details
-        </Link>
-      }
-    >
-      <div className="grid grid-cols-2 gap-3">
-        <StatTile
-          label="Ref. domains"
-          value={
-            backlinks.referringDomains === null
-              ? "—"
-              : backlinks.referringDomains.toLocaleString()
-          }
-        />
-        <StatTile
-          label="Backlinks"
-          value={
-            backlinks.backlinks === null
-              ? "—"
-              : backlinks.backlinks.toLocaleString()
-          }
-        />
-        <StatTile label="New links" value={newLost(backlinks.newBacklinks)} />
-        <StatTile label="Lost links" value={newLost(backlinks.lostBacklinks)} />
-      </div>
-      {/* Raw counts grow with automated directories and scrapers that carry
-          no ranking value, so a rising number is not evidence of progress. */}
-      <p className="pt-3 text-xs text-muted-foreground">
-        Raw counts include automated directories and low-quality links. Check
-        the sources on the Backlinks page before reading growth as progress.
-      </p>
     </CardShell>
   );
 }

@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, Play, Plus, Settings2 } from "lucide-react";
+import { Play, Plus, Settings2 } from "lucide-react";
+import { AiMentionIllustration } from "@/client/components/EmptyIllustrations";
 import { toast } from "sonner";
 import { EmptyState } from "@/client/components/EmptyState";
 import { SkeletonPageContent } from "@/client/components/SkeletonPresets";
@@ -14,6 +15,7 @@ import {
 } from "@/serverFunctions/ai-visibility";
 import { getStandardErrorMessage } from "@/client/lib/error-messages";
 import {
+  aiBrandLabel,
   type AiPrompt,
   type AiRun,
   type AiTrackerState,
@@ -27,7 +29,7 @@ import {
   type PromptTrackingTab,
 } from "./PromptTrackingTabs";
 import { TrackerEditor, TrackerEditorMode } from "./TrackerEditor";
-import { TrackingCostReview } from "./TrackingCostReview";
+import { prefetchRunNowCost, TrackingCostReview } from "./TrackingCostReview";
 import { VisibilityTrend } from "./VisibilityTrend";
 import { RunStatusLine } from "./RunStatusLine";
 import { TrackingScheduleSummary } from "./TrackingScheduleSummary";
@@ -41,6 +43,7 @@ import {
 import type { ProjectMarket } from "@/client/features/projects/types";
 import { DEFAULT_LOCATION_CODE } from "@/shared/keyword-locations";
 import { scheduleLabel } from "@/shared/rank-tracking";
+import { InsufficientCreditsError } from "@/client/features/billing/InsufficientCreditsError";
 
 export function PromptTrackingPage({
   projectId,
@@ -103,11 +106,13 @@ function PromptTrackingContent({
   const [selectedRun, setSelectedRun] = useState<AiRun | null>(null);
   const [costMode, setCostMode] = useState<"check" | "schedule" | null>(null);
   const [editingPrompt, setEditingPrompt] = useState<AiPrompt | null>(null);
-  const [change, setChange] = useState<{
-    patch: AiTrackerPatch;
-    description: string;
-  } | null>(null);
-  const currentRun = selectedRun ?? state.recentRuns[0] ?? null;
+  const [change, setChange] = useState<AiTrackerPatch | null>(null);
+  // A run started here shows at once, before the tracker refetch lists it.
+  // Once listed, the newest run wins, so a later scheduled run takes over.
+  const currentRun =
+    (selectedRun && !state.recentRuns.some((run) => run.id === selectedRun.id)
+      ? selectedRun
+      : state.recentRuns[0]) ?? null;
   const progress = useAiRunProgress(projectId, currentRun);
   const tracker = state.tracker;
   const ownBrand = state.brands.find((brand) => brand.own);
@@ -145,6 +150,12 @@ function PromptTrackingContent({
   });
   const busy =
     progress.run?.status === "running" || progress.run?.status === "queued";
+  // Price Run now on load and again when the active prompts or engines
+  // change, so the dialog opens on the current price.
+  const engines = state.engines.join();
+  useEffect(() => {
+    if (tracker) prefetchRunNowCost(queryClient, projectId, tracker);
+  }, [queryClient, projectId, tracker, activePrompts.length, engines]);
   const schedule = tracker && (
     <TrackingScheduleSummary
       tracker={tracker}
@@ -164,7 +175,7 @@ function PromptTrackingContent({
   );
 
   return (
-    <div className="space-y-5 pt-1">
+    <div className="space-y-4">
       <PageHeader
         title="Prompt Tracking"
         description="Track the prompts your customers use with AI. Inspect where your business is mentioned or cited."
@@ -172,9 +183,9 @@ function PromptTrackingContent({
       {!state.configured ? (
         <EmptyState
           variant="card"
-          icon={MessageSquare}
-          title="Start with the prompts that matter to your business"
-          description="Add a topic and its prompts using your saved project settings."
+          illustration={<AiMentionIllustration />}
+          title="Add the questions your customers ask AI"
+          description="We run them on a schedule and show which answers mention or cite you."
           action={
             <Button onClick={() => setEditorMode(TrackerEditorMode.Prompts)}>
               <Plus />
@@ -191,7 +202,9 @@ function PromptTrackingContent({
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-lg font-semibold">{ownBrand?.name}</h2>
+                    <h2 className="text-lg font-semibold">
+                      {ownBrand && aiBrandLabel(ownBrand)}
+                    </h2>
                     <Badge variant={tracker?.enabled ? "success" : "secondary"}>
                       {tracker?.enabled
                         ? `${scheduleLabel(tracker.scheduleInterval)} tracking`
@@ -225,13 +238,19 @@ function PromptTrackingContent({
                 </div>
               </div>
               <RunStatusLine run={progress.run} tracker={tracker} />
-              {tracker?.lastSkipReason && (
-                <p className="text-xs text-warning">
-                  Most recent scheduling notice: {tracker.lastSkipReason}
-                </p>
+              {/* A notice about the last check is stale while one runs. */}
+              {busy ? null : tracker?.lastSkipReason ===
+                "INSUFFICIENT_CREDITS" ? (
+                <InsufficientCreditsError variant="inline" />
+              ) : (
+                tracker?.lastSkipReason && (
+                  <p className="text-xs text-warning">
+                    Most recent scheduling notice: {tracker.lastSkipReason}
+                  </p>
+                )
               )}
             </div>
-            <VisibilityTrend projectId={projectId} />
+            <VisibilityTrend projectId={projectId} collecting={busy} />
             <PromptTrackingTabs projectId={projectId} tab={tab} />
             {tab === "prompts" && (
               <PromptList
@@ -239,12 +258,11 @@ function PromptTrackingContent({
                 projectId={projectId}
                 state={state}
                 currentRun={currentRun}
+                collecting={busy}
                 onSetup={() => setEditorMode(TrackerEditorMode.Prompts)}
                 onEdit={setEditingPrompt}
                 onReduce={(patch) => reduceTracking.mutate(patch)}
-                onReview={(patch, description) =>
-                  setChange({ patch, description })
-                }
+                onReview={setChange}
                 reducePending={reduceTracking.isPending}
               />
             )}
@@ -253,6 +271,7 @@ function PromptTrackingContent({
                 projectId={projectId}
                 state={state}
                 runId={currentRun?.id}
+                collecting={busy}
               />
             )}
             {tab === "citations" && (
@@ -261,6 +280,7 @@ function PromptTrackingContent({
                 projectId={projectId}
                 state={state}
                 runId={currentRun?.id}
+                collecting={busy}
               />
             )}
           </div>
@@ -319,23 +339,20 @@ function PromptTrackingContent({
         <PromptEditor
           prompt={editingPrompt}
           state={state}
+          pending={reduceTracking.isPending}
           onClose={() => setEditingPrompt(null)}
           onReview={(patch) => {
             setEditingPrompt(null);
-            setChange({
-              patch,
-              description:
-                "Save this exact prompt and topic. Changed wording archives this prompt and adds the new wording as a new prompt; earlier answers keep the prompt they were collected for.",
-            });
+            setChange(patch);
           }}
+          onMove={(patch) => reduceTracking.mutate(patch)}
         />
       )}
       {change && (
         <TrackerPatchReview
           projectId={projectId}
           state={state}
-          patch={change.patch}
-          description={change.description}
+          patch={change}
           onClose={() => setChange(null)}
           onSaved={saved}
         />
