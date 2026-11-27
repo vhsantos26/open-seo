@@ -1,9 +1,131 @@
 {
-  "id": "b937aa6c-dbab-45fa-9b2c-c0c385f31e22",
-  "prevId": "22dbd05c-07b6-43c4-be78-bb2c8d52f057",
+  "id": "cdab94bf-52ab-4d03-b9a5-1280da51a9c3",
+  "prevId": "00d55d7e-d89a-4de8-b216-b6a0cfbfb380",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "public.backlink_snapshots": {
+      "name": "backlink_snapshots",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "domain": {
+          "name": "domain",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rank": {
+          "name": "rank",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "backlinks": {
+          "name": "backlinks",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "referring_domains": {
+          "name": "referring_domains",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "broken_backlinks": {
+          "name": "broken_backlinks",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "new_backlinks": {
+          "name": "new_backlinks",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lost_backlinks": {
+          "name": "lost_backlinks",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "new_referring_domains": {
+          "name": "new_referring_domains",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lost_referring_domains": {
+          "name": "lost_referring_domains",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "captured_at": {
+          "name": "captured_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')"
+        }
+      },
+      "indexes": {
+        "backlink_snapshots_project_captured_idx": {
+          "name": "backlink_snapshots_project_captured_idx",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "captured_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "backlink_snapshots_project_id_projects_id_fk": {
+          "name": "backlink_snapshots_project_id_projects_id_fk",
+          "tableFrom": "backlink_snapshots",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.crawler_credentials": {
       "name": "crawler_credentials",
       "schema": "",
@@ -186,6 +308,57 @@
           ]
         }
       },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.data_refresh_claims": {
+      "name": "data_refresh_claims",
+      "schema": "",
+      "columns": {
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token": {
+          "name": "token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "data_refresh_claims_organization_id_organization_id_fk": {
+          "name": "data_refresh_claims_organization_id_organization_id_fk",
+          "tableFrom": "data_refresh_claims",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -1160,12 +1333,6 @@
         },
         "pinned_at": {
           "name": "pinned_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "target_url": {
-          "name": "target_url",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -5067,6 +5234,20 @@
           "notNull": true,
           "default": false
         },
+        "claude": {
+          "name": "claude",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "perplexity": {
+          "name": "perplexity",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "google_ai_overview": {
           "name": "google_ai_overview",
           "type": "boolean",
@@ -5156,324 +5337,6 @@
         "ai_trackers_project_id_projects_id_fk": {
           "name": "ai_trackers_project_id_projects_id_fk",
           "tableFrom": "ai_trackers",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.backlink_snapshots": {
-      "name": "backlink_snapshots",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "domain": {
-          "name": "domain",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rank": {
-          "name": "rank",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "backlinks": {
-          "name": "backlinks",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "referring_domains": {
-          "name": "referring_domains",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "broken_backlinks": {
-          "name": "broken_backlinks",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "new_backlinks": {
-          "name": "new_backlinks",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lost_backlinks": {
-          "name": "lost_backlinks",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "new_referring_domains": {
-          "name": "new_referring_domains",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lost_referring_domains": {
-          "name": "lost_referring_domains",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "quality_referring_domains": {
-          "name": "quality_referring_domains",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "captured_at": {
-          "name": "captured_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')"
-        }
-      },
-      "indexes": {
-        "backlink_snapshots_project_captured_idx": {
-          "name": "backlink_snapshots_project_captured_idx",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "captured_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "backlink_snapshots_project_id_projects_id_fk": {
-          "name": "backlink_snapshots_project_id_projects_id_fk",
-          "tableFrom": "backlink_snapshots",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.domain_snapshots": {
-      "name": "domain_snapshots",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "domain": {
-          "name": "domain",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "location_code": {
-          "name": "location_code",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "language_code": {
-          "name": "language_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "organic_traffic": {
-          "name": "organic_traffic",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "organic_keywords": {
-          "name": "organic_keywords",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "captured_at": {
-          "name": "captured_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')"
-        }
-      },
-      "indexes": {
-        "domain_snapshots_project_domain_captured_idx": {
-          "name": "domain_snapshots_project_domain_captured_idx",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "domain",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "captured_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "domain_snapshots_project_id_projects_id_fk": {
-          "name": "domain_snapshots_project_id_projects_id_fk",
-          "tableFrom": "domain_snapshots",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.project_annotations": {
-      "name": "project_annotations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "date": {
-          "name": "date",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "note": {
-          "name": "note",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "url": {
-          "name": "url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')"
-        }
-      },
-      "indexes": {
-        "project_annotations_project_date_idx": {
-          "name": "project_annotations_project_date_idx",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "date",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "project_annotations_project_id_projects_id_fk": {
-          "name": "project_annotations_project_id_projects_id_fk",
-          "tableFrom": "project_annotations",
           "tableTo": "projects",
           "columnsFrom": [
             "project_id"

@@ -7,7 +7,11 @@ import {
   optionalMetaOutputSchema,
 } from "@/server/mcp/output-schemas";
 import { withMcpProjectAuth } from "@/server/mcp/project-auth";
-import { formatMcpTable, type McpTableColumn } from "@/server/mcp/table";
+import {
+  formatMcpCell,
+  formatMcpTable,
+  type McpTableColumn,
+} from "@/server/mcp/table";
 import { projectIdSchema } from "@/server/mcp/schemas";
 import {
   BACKLINKS_DEFAULT_SORT,
@@ -76,10 +80,6 @@ const inputSchema = {
 
 type Args = z.infer<z.ZodObject<typeof inputSchema>>;
 
-function formatMetric(value: unknown) {
-  return typeof value === "number" || typeof value === "string" ? value : "?";
-}
-
 function formatLinkType(value: boolean | null | undefined) {
   if (value === true) return "dofollow";
   if (value === false) return "nofollow";
@@ -125,7 +125,7 @@ export const getBacklinksProfileTool = {
   config: {
     title: "Get backlinks profile",
     description:
-      "Returns one bounded page of detailed backlink rows for a domain or page: linking URLs, target URLs, anchors, dofollow/nofollow, authority/spam signals, and lost/broken status. Supports filters, sorting, one_per_domain/as_is mode, and pagination. Charges credits (~30 per page typical). Self-hosted deployments need the Backlinks API enabled on their DataForSEO account.",
+      "List the individual backlinks of a domain or page: linking and target URLs, anchors, dofollow or nofollow, authority and spam signals, and lost or broken status. Supports filters, sorting, pagination, and a mode of one_per_domain (the default) or as_is. Costs ~30 credits per page of rows. Self-hosted deployments need the Backlinks API enabled on their DataForSEO account. For totals and top referring domains, use get_backlinks_overview.",
     inputSchema,
     outputSchema: z.looseObject({
       target: z.string(),
@@ -168,7 +168,7 @@ export const getBacklinksProfileTool = {
       `- page: ${backlinks.page}`,
       `- page size: ${backlinks.pageSize}`,
       `- rows returned: ${backlinks.rows.length}`,
-      `- total backlinks: ${formatMetric(backlinks.totalCount)}`,
+      `- total backlinks: ${formatMcpCell(backlinks.totalCount)}`,
       `- has more: ${backlinks.hasMore ? "yes" : "no"}`,
       "",
       backlinks.rows.length === 0

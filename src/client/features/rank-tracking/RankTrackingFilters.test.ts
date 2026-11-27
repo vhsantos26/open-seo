@@ -32,12 +32,14 @@ function makeRow(
       previousPosition: null,
       rankingUrl: null,
       serpFeatures: [],
+      checkedAt: null,
     },
     mobile: {
       position: mobilePosition,
       previousPosition: null,
       rankingUrl: null,
       serpFeatures: [],
+      checkedAt: null,
     },
   };
 }

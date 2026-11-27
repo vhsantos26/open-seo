@@ -8,12 +8,20 @@ import { resolveUserContextFromHeaders } from "@/middleware/ensure-user/resolve"
 import { AppError } from "@/server/lib/errors";
 import { responseForAppError } from "@/server/lib/http-errors";
 import { getPublicOrigin } from "@/server/mcp/public-origin";
-import { GA4_OAUTH_PROVIDER_ID, GA4_OAUTH_SCOPES } from "@/shared/ga4";
+import {
+  GA4_DATA_SCOPE,
+  GA4_OAUTH_PROVIDER_ID,
+  GA4_OAUTH_SCOPES,
+} from "@/shared/ga4";
 import {
   GOOGLE_LINK_ERROR_PARAM,
   type GoogleLinkProvider,
 } from "@/shared/google-link";
-import { GSC_OAUTH_PROVIDER_ID, GSC_OAUTH_SCOPES } from "@/shared/gsc";
+import {
+  GSC_DATA_SCOPE,
+  GSC_OAUTH_PROVIDER_ID,
+  GSC_OAUTH_SCOPES,
+} from "@/shared/gsc";
 import {
   getGoogleOAuthClientConfig,
   hasGoogleOAuthConfig,
@@ -25,6 +33,7 @@ import {
   getCodeChallenge,
   getCodeVerifier,
 } from "./googleOAuthState";
+import { ownGoogleCallbackDisabled } from "./googleAccess";
 
 /**
  * Google data grants (Search Console, Analytics) are linked here rather than
@@ -42,8 +51,11 @@ import {
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 // Refresh when the stored access token is within this many ms of expiry.
 const ACCESS_TOKEN_SKEW_MS = 5_000;
+// Google's token endpoint answers in well under a second; past this it is down.
+const TOKEN_TIMEOUT_MS = 10_000;
 
 export type GoogleOAuthIntegration = {
   provider: GoogleLinkProvider;
@@ -51,6 +63,8 @@ export type GoogleOAuthIntegration = {
   displayName: string;
   callbackPath: `/${string}`;
   scopes: readonly string[];
+  /** The data permission the integration can't work without. */
+  requiredScope: string;
 };
 
 export const GSC_INTEGRATION: GoogleOAuthIntegration = {
@@ -59,6 +73,7 @@ export const GSC_INTEGRATION: GoogleOAuthIntegration = {
   displayName: "Search Console",
   callbackPath: "/api/gsc/oauth/callback",
   scopes: GSC_OAUTH_SCOPES,
+  requiredScope: GSC_DATA_SCOPE,
 };
 
 export const GA4_INTEGRATION: GoogleOAuthIntegration = {
@@ -67,6 +82,7 @@ export const GA4_INTEGRATION: GoogleOAuthIntegration = {
   displayName: "Google Analytics",
   callbackPath: "/api/ga4/oauth/callback",
   scopes: GA4_OAUTH_SCOPES,
+  requiredScope: GA4_DATA_SCOPE,
 };
 
 const googleTokenResponseSchema = z.object({
@@ -163,12 +179,15 @@ async function upsertGrant(input: {
     });
 }
 
-/** Google's token endpoint; null when it rejects the grant. */
+/** Google's token endpoint; null when it rejects the grant. A slow endpoint
+ *  rejects with a TimeoutError instead, which callers must not read as a
+ *  revoked grant. */
 async function fetchTokens(params: Record<string, string>) {
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(params),
+    signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
   });
   if (!response.ok) return null;
   return googleTokenResponseSchema.parse(await response.json());
@@ -279,6 +298,16 @@ async function handleGoogleOAuthCallback(input: {
     return fail("oauth_code_verification_failed");
   }
   if (!tokens) return fail("oauth_code_verification_failed");
+  // Google's consent screen lets the user approve sign-in while leaving the
+  // Search Console or Analytics box unchecked. That grant gets a 403 on every
+  // API call, so send them back to check it rather than saving it. An omitted
+  // scope means everything requested was granted.
+  if (
+    tokens.scope &&
+    !tokens.scope.split(/\s+/).includes(input.integration.requiredScope)
+  ) {
+    return fail("scope_not_granted");
+  }
   let googleAccountId: string;
   try {
     googleAccountId = await getGoogleAccountId(
@@ -380,10 +409,34 @@ export async function getGoogleAccessToken(input: {
   return tokens.access_token;
 }
 
+/**
+ * Revokes a Google access or refresh token. Google revokes the whole grant
+ * the token belongs to (every scope this OAuth client holds for that Google
+ * account), so callers must make sure no other stored grant still needs it.
+ */
+export async function revokeGoogleToken(token: string): Promise<void> {
+  const response = await fetch(GOOGLE_REVOKE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token }),
+    signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+  });
+  // Google answers 400 invalid_token for an already-revoked or expired token,
+  // which leaves no live grant either way.
+  if (!response.ok && response.status !== 400) {
+    throw new Error(`Google token revocation failed: ${response.status}`);
+  }
+}
+
 export async function handleGoogleOAuthCallbackRequest(
   request: Request,
   integration: GoogleOAuthIntegration,
 ) {
+  // Behind an Every App gateway the gateway holds Google, so OpenSEO's own
+  // callback doesn't exist there (googleAccess.ts).
+  if (await ownGoogleCallbackDisabled()) {
+    return new Response("Not found", { status: 404 });
+  }
   try {
     const context = await resolveUserContextFromHeaders(request.headers);
     return await handleGoogleOAuthCallback({

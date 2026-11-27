@@ -1,1 +1,0 @@
-ALTER TABLE `backlink_snapshots` ADD `quality_referring_domains` integer;

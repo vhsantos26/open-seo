@@ -1,5 +1,6 @@
 import { Link2 } from "lucide-react";
 import { sort } from "remeda";
+import { cn } from "cn";
 import { Badge } from "@/client/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/client/components/ui/card";
 import {
@@ -10,7 +11,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/client/components/ui/table";
-import { StatTile } from "@/client/components/StatTile";
 import { SafeExternalLink } from "@/client/components/SafeExternalLink";
 import { DeviceRankCell } from "@/client/features/rank-tracking/RankTrackingTableParts";
 import {
@@ -97,6 +97,7 @@ export function KeywordsTable({
                     previousPosition: keyword.previousPosition,
                     rankingUrl: null,
                     serpFeatures: [],
+                    checkedAt: null,
                   }}
                 />
               )}
@@ -105,6 +106,53 @@ export function KeywordsTable({
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+function percentChange(
+  current: number | null,
+  previous: number | null,
+): number | null {
+  if (current === null || previous === null || previous <= 0) return null;
+  return Math.round(((current - previous) / previous) * 100);
+}
+
+/** One metric: a muted uppercase label over a big tabular number, with an
+ *  optional percent-change line and hint below. */
+function StatTile({
+  label,
+  value,
+  delta,
+  hint,
+}: {
+  label: string;
+  value: string;
+  delta?: { current: number | null; previous: number | null };
+  hint?: string;
+}) {
+  const percent = delta ? percentChange(delta.current, delta.previous) : null;
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+        {label}
+      </p>
+      <p className="text-2xl leading-tight font-semibold tabular-nums">
+        {value}
+      </p>
+      {percent === null ? null : (
+        <p
+          className={cn(
+            "text-xs tabular-nums",
+            percent > 0 && "text-success",
+            percent < 0 && "text-destructive",
+          )}
+        >
+          {percent > 0 ? "▲ " : percent < 0 ? "▼ " : ""}
+          {Math.abs(percent)}%
+        </p>
+      )}
+      {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
+    </div>
   );
 }
 

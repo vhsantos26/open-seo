@@ -1,12 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { listCompetitors, listResearchKeywords, research, workflow } =
-  vi.hoisted(() => ({
-    listCompetitors: vi.fn(),
-    listResearchKeywords: vi.fn(),
-    research: vi.fn(),
-    workflow: { get: vi.fn(), create: vi.fn() },
-  }));
+const {
+  getTracker,
+  listCompetitors,
+  listResearchKeywords,
+  research,
+  workflow,
+  prepareWebsiteTracking,
+  startWebsiteTrackingRun,
+} = vi.hoisted(() => ({
+  getTracker: vi.fn(),
+  listCompetitors: vi.fn(),
+  listResearchKeywords: vi.fn(),
+  research: vi.fn(),
+  workflow: { get: vi.fn(), create: vi.fn() },
+  prepareWebsiteTracking: vi.fn(),
+  startWebsiteTrackingRun: vi.fn(),
+}));
 
 vi.mock("cloudflare:workers", () => ({
   env: { AI_VISIBILITY_WORKFLOW: workflow },
@@ -23,7 +33,10 @@ vi.mock("../repositories/aiVisibilityConfigurationRepository", () => ({
   writeConfiguration: vi.fn(),
   writeResearchKeywords: vi.fn(),
 }));
-vi.mock("./websiteTrackingSetup", () => ({ prepareWebsiteTracking: vi.fn() }));
+vi.mock("./websiteTrackingSetup", () => ({
+  prepareWebsiteTracking,
+  startWebsiteTrackingRun,
+}));
 vi.mock("@/server/features/projects/repositories/ProjectRepository", () => ({
   ProjectRepository: {
     getProjectForOrganization: async () => ({
@@ -47,7 +60,7 @@ vi.mock(
   }),
 );
 vi.mock("../repositories/AiVisibilityRepository", () => ({
-  AiVisibilityRepository: { listResearchKeywords },
+  AiVisibilityRepository: { getTracker, listResearchKeywords },
 }));
 vi.mock("@/server/features/projects/services/websiteResearch", () => ({
   researchWebsite: research,
@@ -66,6 +79,7 @@ describe("runAiResearchSetup", () => {
   beforeEach(() => {
     listResearchKeywords.mockResolvedValue([]);
     listCompetitors.mockResolvedValue([]);
+    prepareWebsiteTracking.mockResolvedValue(null);
     research.mockResolvedValue({
       name: "OpenSEO",
       domain: "openseo.so",
@@ -83,13 +97,47 @@ describe("runAiResearchSetup", () => {
     });
   });
 
-  it("does nothing when keywords were saved meanwhile", async () => {
-    listResearchKeywords.mockResolvedValue(["rank tracker"]);
+  it("does nothing when a tracker was created meanwhile", async () => {
+    getTracker.mockResolvedValueOnce({ id: "tracker" });
 
     await expect(
       runAiResearchSetup({ projectId: "project" }, customer),
     ).resolves.toEqual({ review: null });
     expect(research).not.toHaveBeenCalled();
+  });
+
+  it("seeds tracking from saved keywords instead of generating new ones", async () => {
+    listResearchKeywords.mockResolvedValue(["rank tracker", "seo tool"]);
+    listCompetitors.mockResolvedValue([{ domain: "ahrefs.com" }]);
+
+    await runAiResearchSetup({ projectId: "project" }, customer);
+
+    expect(research).toHaveBeenCalledWith(
+      "openseo.so",
+      expect.objectContaining({ id: "project" }),
+      { ...customer, projectId: "project" },
+      { promptSavedTopics: true },
+    );
+    expect(prepareWebsiteTracking).toHaveBeenCalledWith(
+      {
+        projectId: "project",
+        suggestedTopics: ["rank tracker", "seo tool"].map(topic),
+      },
+      expect.objectContaining({ id: "project" }),
+    );
+  });
+
+  it("runs newly seeded tracking once only for in-app setup", async () => {
+    listCompetitors.mockResolvedValue([{ domain: "ahrefs.com" }]);
+    prepareWebsiteTracking.mockResolvedValue({ prompts: [] });
+
+    await runAiResearchSetup({ projectId: "project" }, customer);
+    expect(startWebsiteTrackingRun).not.toHaveBeenCalled();
+
+    await runAiResearchSetup({ projectId: "project" }, customer, {
+      runSeededTracking: true,
+    });
+    expect(startWebsiteTrackingRun).toHaveBeenCalledWith("project", customer);
   });
 
   it("returns website research for competitor review when competitors are missing", async () => {
@@ -102,11 +150,34 @@ describe("runAiResearchSetup", () => {
 });
 
 describe("getAiResearchSetup", () => {
+  it("does not count saved keywords without a tracker as set up", async () => {
+    listResearchKeywords.mockResolvedValue(["rank tracker"]);
+    listCompetitors.mockResolvedValue([]);
+    workflow.get.mockRejectedValue(new Error("not found"));
+
+    await expect(getAiResearchSetup("project")).resolves.toMatchObject({
+      keywords: ["rank tracker"],
+      status: "none",
+    });
+  });
+
+  it("counts a tracker saved without research keywords as set up", async () => {
+    listResearchKeywords.mockResolvedValue([]);
+    listCompetitors.mockResolvedValue([]);
+    getTracker.mockResolvedValueOnce({ id: "tracker" });
+    workflow.get.mockRejectedValue(new Error("not found"));
+
+    await expect(getAiResearchSetup("project")).resolves.toMatchObject({
+      status: "ready",
+    });
+  });
+
   it.each([
     [
       "AppError: We couldn't read this website. Check the URL and try again.",
       "website_unreadable",
     ],
+    ["Error: Too many subrequests.", "subrequest_limit"],
     ["Error: connect ECONNREFUSED 10.0.0.5:5432", null],
   ])("surfaces only a known failure cause for %s", async (message, failure) => {
     listResearchKeywords.mockResolvedValue([]);
@@ -155,6 +226,7 @@ describe("startAiResearchSetup", () => {
       id: "ai-research-setup-project",
       params: {
         setupProjectId: "project",
+        runSeededTracking: false,
         customer: { ...customer, projectId: "project" },
       },
     });

@@ -17,7 +17,7 @@ The project-context tools are free and shared with the app and other agents.
 
 1. External MCP clients: resolve the project with `list_projects`, ask only if the match is ambiguous, then call `get_project_context`. In SAM, use the current project and context already injected into the conversation; SAM has no `get_project_context` tool and needs no project selection or connection setup.
 2. This skill needs `business_overview`, the website and the main competitors. If the overview is empty, infer it from the site, confirm it in one question, and save it with `update_project_context`.
-3. Read `get_ai_visibility_tracker`. Its prompts, competitors, engines, market and latest runs decide which path below applies. Check the tracker's own brand, the `brands` row with `own: true`. Its name is the project name. If that is not how people write the brand (for example a project named "Acme website"), answers that name the brand are not counted as mentions and brand questions are not treated as branded. Ask the user to rename the project in the app before collecting or interpreting answers.
+3. Read `get_ai_visibility_tracker`. Its prompts, competitors, engines, market and latest runs decide which path below applies. Check the tracker's own brand, the `brands` row with `own: true`. Its name is the project's brand name, or the project name when no brand name is set. If that is not how people write the brand (for example a project named "Acme website"), answers that name the brand are not counted as mentions and brand questions are not treated as branded. Confirm the right name with the user and save it with `update_project_context` (`{brandName: "Acme"}`) before collecting or interpreting answers. Saving it does not change earlier runs.
 4. Reuse research-log findings under 30 days old for discovery. A claim that drives a recommendation still needs evidence from a run or a page read during this audit.
 5. On finish, write back the pages the report names with `addKeyPages` and append `{ updates: [{ appendResearchLog: { summary: "AI visibility audit: <run id>. Verdict: <conclusion>" } }] }`.
 
@@ -27,7 +27,7 @@ The project-context tools are free and shared with the app and other agents.
 - `get_ai_visibility_trend`: whether visibility is moving, when the tracker has comparable history. Never compute a trend yourself from separate result calls.
 - `research_ai_visibility_prompts`: the questions around a prompt group and the sources ChatGPT cites for them (US English only).
 - `explore_prompt`: asks ChatGPT one prompt through its API and returns the answer, citations and `fanOutQueries`, the web searches the model ran before answering. Charged at actual usage per uncached answer; cached answers are free for seven days. Requires a paid plan in hosted mode.
-- `estimate_ai_visibility_cost`, `save_ai_visibility_tracker`, `run_ai_visibility_check`, `get_ai_visibility_run`: only for the first-run path below.
+- `estimate_ai_visibility_cost`, `save_ai_visibility_tracker`, `set_ai_visibility_schedule`, `run_ai_visibility_check`, `get_ai_visibility_run`: only for the first-run path below.
 - `get_ranked_keywords`, `get_serp_results`, `get_backlinks_overview`: optional context when an owned page's search performance or authority could change a recommendation.
 - Web reading (fetch, scrape or search): `robots.txt`, the owned pages that should be cited, and the pages AI answers cite instead.
 
@@ -37,9 +37,9 @@ The project-context tools are free and shared with the app and other agents.
 
 - **Tracker with a completed run**: use the latest completed baseline or scheduled run, or the latest completed manual check when `recentRuns` has no other. Do not buy new answers.
 - **Run in progress**: when `recentRuns` shows a pending or partially finished run, follow it with `get_ai_visibility_run`, respecting `pollAfterSeconds`. Do not start another. A failed or partial run still supplies whatever answers it completed; report its coverage.
-- **Tracker with active prompts but no runs**: saved prompts that were never collected, for example because the schedule was never enabled. Estimate one check of the saved active prompts with `estimate_ai_visibility_cost`, get approval once, then call `run_ai_visibility_check` with the approved cost as `maxCostUsd`. Follow the returned run. Do not change the schedule.
+- **Tracker with active prompts but no runs**: saved prompts that were never collected, for example because the schedule was never enabled. Estimate one check of the saved active prompts with `estimate_ai_visibility_cost`, get approval once, then call `run_ai_visibility_check` with the approved `runNowCostUsd` as `maxCostUsd`. Follow the returned run. Do not change the schedule.
 - **Tracker with no active prompts** (every topic or prompt paused or archived): ask whether to resume the existing prompts or add new ones, then take the matching path. Do not unpause anything without the user's direction.
-- **No tracker**: propose 10–15 neutral prompts across two or three topics the business sells into, preferring real prompts from `research_ai_visibility_prompts`. Show one plan with the cost from `estimate_ai_visibility_cost`, get approval once, save through `save_ai_visibility_tracker` with each prompt's `topic`, and run one check with the approved cost as `maxCostUsd`. Do not enable a schedule. If the user declines the spend, run the audit on prompt research alone and say the report has no observed answers.
+- **No tracker**: propose 10–15 neutral prompts across two or three topics the business sells into, preferring real prompts from `research_ai_visibility_prompts`. Show one plan with the check cost and the monthly cost from `estimate_ai_visibility_cost`, and say that a new tracker runs weekly, with its first scheduled check a week later. Get approval once, save through `save_ai_visibility_tracker` with each prompt's `topic`, and run one check with the approved `runNowCostUsd` as `maxCostUsd`. If the user wants this audit only, pause the schedule with `set_ai_visibility_schedule` and `enabled: false`. If the user declines the spend, run the audit on prompt research alone and say the report has no observed answers.
 
 ### 2. Read where the brand stands
 
@@ -87,13 +87,18 @@ For each: the prompts it serves, the evidence (answers, cited pages, engines), t
 
 ## What to return
 
-Deliver through the `seo-report` skill, saving with `skill: "ai-visibility-audit"` and a title like "AI Visibility Audit — Oct 2, 2026". If that skill is unavailable, say so and stop before writing HTML. Sections, in order:
+Deliver through the `seo-report` skill, saving with `skill: "ai-visibility-audit"` and the title "AI visibility audit". If that skill is unavailable, say so and stop before writing HTML. Use its report shape: the verdict, "What to do", the moves, then the data. For this audit:
 
-1. **Where you stand in AI answers**: three bullets. Mention and citation rates with denominators for the strongest and weakest topics (or engines, when only one topic has neutral prompts), the number of branded prompts left out of these rates, the competitor that appears most often when the brand does not, and what is already working.
-2. **Recommendations**: one to three `h3` items in priority order. Each has **Do this** (two to four bullets, starting with a verb and naming the page) and **Why** (the prompts and engines, the cited pages behind the gap, and the main uncertainty), plus a small evidence table: Prompt | Engines naming a competitor, not you | Pages cited instead.
-3. **What AI cites in your market**: one table of the top recurring sources. Source | Type | Answers citing it | Lists you? | Lists competitors.
-4. **What else we checked**: Opportunity | What we found | Decision, one line per shortlist row that did not become a recommendation.
-5. **How this report was made**: the fixed skill link line from `seo-report` (URL `https://openseo.so/docs/skills/ai-visibility-audit`, text "OpenSEO AI Visibility Audit skill"), the run ID, collection date, market, engines and coverage, then a `<details><summary>Evidence and methodology</summary>` block with the prompts, the answers and pages read, any fan-out queries checked, and the `robots.txt` rules found.
+1. **Verdict**: the sentence a founder would repeat, built from the evidence: how often AI answers name the brand, with the denominator, and who they name instead.
+2. **The moves**: one to three in priority order.
+   - **Facts**: the prompts the move serves out of those checked ("6 of 14 prompts"), the engines, and the source cited instead.
+   - **Do this**: two to four steps, starting with a verb and naming the page or the third-party source.
+   - **Why**: the prompts and engines, the cited pages behind the gap, and the main uncertainty.
+   - A small evidence table: Prompt | Engines naming a competitor, not you | Pages cited instead.
+3. **Where you stand in AI answers**: three bullets. Mention and citation rates with denominators for the strongest and weakest topics (or engines, when only one topic has neutral prompts), the number of branded prompts left out of these rates, the competitor that appears most often when the brand does not, and what is already working.
+4. **What AI cites in your market**: one table of the top recurring sources. Source | Type | Answers citing it | Lists you? | Lists competitors. The sources the moves act on are the `pick` rows.
+5. **What else we checked**: Opportunity | What we found | Decision, one line per shortlist row that did not become a move.
+6. **How this report was made**: the fixed skill link line from `seo-report` (URL `https://openseo.so/docs/skills/ai-visibility-audit`, text "OpenSEO AI Visibility Audit skill"), the run ID, collection date, market, engines and coverage, then the closed "Evidence and methodology" block with the prompts, the answers and pages read, any fan-out queries checked, and the `robots.txt` rules found.
 
 In chat, lead with one sentence a founder would repeat, built from the evidence, for example: "When people ask AI for the best invoicing app for freelancers, 3 of 4 engines name FreshBooks and cite two review articles that don't list you." Then the leading recommendation and the report link.
 

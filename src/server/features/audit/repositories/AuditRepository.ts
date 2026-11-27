@@ -4,11 +4,11 @@
  * audit_pages, audit_issues, and stored Lighthouse results. Link edges live
  * in the per-audit scratchpad Durable Object, not here.
  */
+import { AuditStatus } from "@/shared/audit-status";
 import { and, count, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import {
   audits,
-  auditIssues,
   auditLighthouseResults,
   auditPages,
   projects,
@@ -41,11 +41,23 @@ async function createAudit(data: {
     startUrl: data.startUrl,
     workflowInstanceId: data.workflowInstanceId,
     config: JSON.stringify(data.config),
-    status: "running",
+    status: AuditStatus.Running,
     pagesTotal: data.pagesTotal,
     lighthouseTotal: data.lighthouseTotal,
     currentPhase: "discovery",
   });
+}
+
+/** Records where the crawl really starts, once the workflow has probed the site. */
+async function updateAuditStart(
+  auditId: string,
+  startUrl: string,
+  config: AuditConfig,
+) {
+  await db
+    .update(audits)
+    .set({ startUrl, config: JSON.stringify(config) })
+    .where(eq(audits.id, auditId));
 }
 
 async function updateAuditProgress(
@@ -75,22 +87,25 @@ async function completeAudit(
   auditId: string,
   workflowInstanceId: string,
   data: {
+    status: AuditStatus.Completed | AuditStatus.Refused;
     pagesCrawled: number;
     pagesTotal: number;
   },
 ) {
+  // Like failAudit, only a running audit can finish: a reconciler that already
+  // failed it keeps its error instead of showing "completed" beside it.
   await db
     .update(audits)
     .set({
-      status: "completed",
       completedAt: new Date().toISOString(),
-      currentPhase: "completed",
+      currentPhase: data.status,
       ...data,
     })
     .where(
       and(
         eq(audits.id, auditId),
         eq(audits.workflowInstanceId, workflowInstanceId),
+        eq(audits.status, AuditStatus.Running),
       ),
     );
 }
@@ -110,7 +125,7 @@ async function failAudit(
   await db
     .update(audits)
     .set({
-      status: "failed",
+      status: AuditStatus.Failed,
       completedAt: new Date().toISOString(),
       currentPhase: "failed",
       ...(errorInfo && {
@@ -123,7 +138,7 @@ async function failAudit(
       and(
         eq(audits.id, auditId),
         eq(audits.workflowInstanceId, workflowInstanceId),
-        eq(audits.status, "running"),
+        eq(audits.status, AuditStatus.Running),
       ),
     );
 }
@@ -176,16 +191,13 @@ async function insertCrawledBatch(
       h4Count: page.h4Count,
       h5Count: page.h5Count,
       h6Count: page.h6Count,
-      headingOrderJson: JSON.stringify(page.headingOrder),
       wordCount: page.wordCount,
       contentHash: page.contentHash,
       imagesTotal: page.imagesTotal,
       imagesMissingAlt: page.imagesMissingAlt,
-      imagesJson: JSON.stringify(page.images),
       internalLinkCount: page.links.filter((l) => l.isInternal).length,
       externalLinkCount: page.links.filter((l) => !l.isInternal).length,
       hasStructuredData: page.hasStructuredData,
-      hreflangTagsJson: JSON.stringify(page.hreflangTags),
       isIndexable: page.isIndexable,
       fetchClass: page.fetchClass,
       crawlDepth: page.crawlDepth,
@@ -252,21 +264,6 @@ async function getLatestAuditForProject(projectId: string) {
   });
 }
 
-async function getIssuesForAudit(
-  auditId: string,
-  filters: { severity?: "critical" | "warning" | "info"; issueType?: string },
-) {
-  return db.query.auditIssues.findMany({
-    where: and(
-      eq(auditIssues.auditId, auditId),
-      filters.severity ? eq(auditIssues.severity, filters.severity) : undefined,
-      filters.issueType
-        ? eq(auditIssues.issueType, filters.issueType)
-        : undefined,
-    ),
-  });
-}
-
 async function getPagesForAudit(auditId: string) {
   return db
     .select({
@@ -288,20 +285,18 @@ async function getPagesForAudit(auditId: string) {
     .where(eq(auditPages.auditId, auditId));
 }
 
+/** How many of an audit's pages ended in each fetch outcome. */
 async function countPagesByFetchClass(
   auditId: string,
-  fetchClass: PageFetchClass,
-): Promise<number> {
+): Promise<Record<PageFetchClass, number>> {
   const rows = await db
-    .select({ pages: count() })
+    .select({ fetchClass: auditPages.fetchClass, pages: count() })
     .from(auditPages)
-    .where(
-      and(
-        eq(auditPages.auditId, auditId),
-        eq(auditPages.fetchClass, fetchClass),
-      ),
-    );
-  return rows[0]?.pages ?? 0;
+    .where(eq(auditPages.auditId, auditId))
+    .groupBy(auditPages.fetchClass);
+  const counts = { ok: 0, blocked: 0, rate_limited: 0, error: 0 };
+  for (const row of rows) counts[row.fetchClass] = row.pages;
+  return counts;
 }
 
 async function hasPagesForAudit(auditId: string): Promise<boolean> {
@@ -342,29 +337,19 @@ async function getAuditUsageForOrganization(organizationId: string) {
       (total, row) => total + row.pagesTotal + row.lighthouseTotal,
       0,
     ),
-    runningCount: rows.filter((row) => row.status === "running").length,
+    runningCount: rows.filter((row) => row.status === AuditStatus.Running)
+      .length,
   };
 }
 
-async function getAuditResultsForProject(auditId: string, projectId: string) {
-  const audit = await getAuditForProject(auditId, projectId);
-  if (!audit) {
-    return { audit: null, pages: [], lighthouse: [], issues: [] };
-  }
-
-  const [pages, lighthouse, issues] = await Promise.all([
-    db.query.auditPages.findMany({
-      where: eq(auditPages.auditId, auditId),
-    }),
-    db.query.auditLighthouseResults.findMany({
-      where: eq(auditLighthouseResults.auditId, auditId),
-    }),
-    db.query.auditIssues.findMany({
-      where: eq(auditIssues.auditId, auditId),
-    }),
-  ]);
-
-  return { audit, pages, lighthouse, issues };
+async function hasAuditInOrganization(organizationId: string) {
+  const rows = await db
+    .select({ id: audits.id })
+    .from(audits)
+    .innerJoin(projects, eq(audits.projectId, projects.id))
+    .where(eq(projects.organizationId, organizationId))
+    .limit(1);
+  return rows.length > 0;
 }
 
 async function getLighthouseResultById(input: {
@@ -410,6 +395,7 @@ async function deleteAuditForProject(auditId: string, projectId: string) {
 
 export const AuditRepository = {
   createAudit,
+  updateAuditStart,
   updateAuditProgress,
   completeAudit,
   failAudit,
@@ -419,13 +405,12 @@ export const AuditRepository = {
   insertLighthouseResults,
   getAuditForProject,
   getLatestAuditForProject,
-  getIssuesForAudit,
   getPagesForAudit,
   countPagesByFetchClass,
   hasPagesForAudit,
   getAuditsByProject,
   getAuditUsageForOrganization,
-  getAuditResultsForProject,
+  hasAuditInOrganization,
   getLighthouseResultById,
   deleteAuditForProject,
 } as const;

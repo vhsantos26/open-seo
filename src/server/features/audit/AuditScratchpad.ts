@@ -22,6 +22,8 @@ import { DurableObject, env } from "cloudflare:workers";
 import type { CrawlThrottleState } from "@/server/lib/audit/crawl-throttle";
 import {
   BROKEN_LINKS_SQL,
+  FRONTIER_CLAIM_SQL,
+  FRONTIER_DISCOVER_SQL,
   ORPHAN_PAGES_SQL,
   SCRATCHPAD_SCHEMA_SQL,
 } from "@/server/features/audit/scratchpad-sql";
@@ -143,10 +145,14 @@ export class AuditScratchpad extends DurableObject {
   /**
    * Lease the next batch of pending URLs for one crawl chunk. Idempotent per
    * chunkNo: a retried step gets back exactly the URLs its failed attempt
-   * had leased (link-discovered URLs drain before sitemap-only ones, FIFO
-   * within each class — same ordering as the old in-memory queues).
+   * had leased. `pagesLeft` is what remains of the audit's page budget; the
+   * order and how the budget shapes it are on FRONTIER_CLAIM_SQL.
    */
-  async claimChunk(chunkNo: number, limit: number): Promise<ClaimedChunk> {
+  async claimChunk(
+    chunkNo: number,
+    limit: number,
+    pagesLeft: number,
+  ): Promise<ClaimedChunk> {
     const existing = this.selectClaimed(
       `SELECT url, depth, in_sitemap FROM frontier WHERE state = 'leased' AND chunk_no = ?`,
       chunkNo,
@@ -167,8 +173,8 @@ export class AuditScratchpad extends DurableObject {
     if (limit <= 0) return { urls: [], isRetry: false };
 
     const fresh = this.selectClaimed(
-      `SELECT url, depth, in_sitemap FROM frontier WHERE state = 'pending'
-       ORDER BY CASE source WHEN 'link' THEN 0 ELSE 1 END, rowid LIMIT ?`,
+      FRONTIER_CLAIM_SQL,
+      pagesLeft - limit,
       limit,
     );
     for (const row of fresh) {
@@ -214,13 +220,7 @@ export class AuditScratchpad extends DurableObject {
       }
     }
     for (const found of input.discovered) {
-      // OR IGNORE: already-seen URLs (crawled, leased, or pending) keep
-      // their existing row — this is the global dedup.
-      this.ctx.storage.sql.exec(
-        `INSERT OR IGNORE INTO frontier (url, depth, source, in_sitemap) VALUES (?, ?, 'link', 0)`,
-        found.url,
-        found.depth,
-      );
+      this.ctx.storage.sql.exec(FRONTIER_DISCOVER_SQL, found.url, found.depth);
     }
     return this.stats();
   }
@@ -291,7 +291,7 @@ export class AuditScratchpad extends DurableObject {
     await this.ctx.storage.deleteAll();
   }
 
-  /** Same wipe exposed under the common erasure RPC used by the admin tool. */
+  /** Same wipe exposed under the common erasure RPC used by account deletion. */
   async destroyForErasure(): Promise<void> {
     await this.destroy();
   }
@@ -313,11 +313,11 @@ export class AuditScratchpad extends DurableObject {
     }
   }
 
-  private selectClaimed(query: string, param: number): ClaimedUrl[] {
+  private selectClaimed(query: string, ...params: number[]): ClaimedUrl[] {
     return this.ctx.storage.sql
       .exec<{ url: string; depth: number | null; in_sitemap: number }>(
         query,
-        param,
+        ...params,
       )
       .toArray()
       .map((row) => ({

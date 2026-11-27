@@ -11,7 +11,11 @@ import {
 } from "./aiVisibilityResults";
 import { exportAiData } from "./aiVisibilityExport";
 import { loadAiTrend } from "./aiVisibilityTrend";
-import { listAiResearchKeywords, researchAiPrompts } from "./aiPromptResearch";
+import {
+  listAiResearchKeywords,
+  researchAiPrompts,
+  updateAiResearchKeywords,
+} from "./aiPromptResearch";
 import type { GenerateAiPromptsInput } from "@/types/schemas/aiPromptSuggestions";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 export const AiVisibilityService = {
@@ -25,10 +29,16 @@ export const AiVisibilityService = {
   startResearchSetup: async (
     input: { projectId: string },
     billing: BillingCustomerContext,
+    options?: { runSeededTracking?: boolean },
   ) =>
-    (await import("./aiResearchKeywords")).startAiResearchSetup(input, billing),
+    (await import("./aiResearchKeywords")).startAiResearchSetup(
+      input,
+      billing,
+      options,
+    ),
   researchPrompts: researchAiPrompts,
   listResearchKeywords: listAiResearchKeywords,
+  updateResearchKeywords: updateAiResearchKeywords,
   getTracker,
   saveTracker,
   estimateCost,

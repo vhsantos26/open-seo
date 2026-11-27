@@ -9,6 +9,7 @@ import {
   Globe,
   LayoutDashboard,
   Link2,
+  MapPin,
   MessageSquare,
   Search,
   Sparkles,
@@ -45,6 +46,11 @@ const projectNavItems = [
     to: "/p/$projectId/progress" as const,
     label: "Progress",
     icon: Activity,
+  },
+  {
+    to: "/p/$projectId/local-seo" as const,
+    label: "Local SEO",
+    icon: MapPin,
   },
   {
     to: "/p/$projectId/search-performance" as const,
@@ -159,6 +165,7 @@ export function getProjectNavGroups(projectId: string) {
         byPath("/p/$projectId/progress"),
         byPath("/p/$projectId/search-performance"),
         byPath("/p/$projectId/rank-tracking"),
+        byPath("/p/$projectId/local-seo"),
         byPath("/p/$projectId/saved"),
         byPath("/p/$projectId/audit"),
       ],

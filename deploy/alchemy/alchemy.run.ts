@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- the one production stack: every Worker, binding, var and secret is declared here */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as CfWorkers from "@distilled.cloud/cloudflare/workers";
@@ -29,8 +30,9 @@ import {
 //   deploy via `pnpm deploy:preview --stage <name>`; self-hosters via
 //   `pnpm deploy:selfhost` (stage "selfhost", no flag to pass).
 // - Stage "hosted-prod": names the EXISTING openseo.so production resources
-//   so `--adopt` imports them. Deploy via `pnpm deploy:postgres` (--adopt and
-//   the stage baked in).
+//   so `--adopt` imports them. Deployed only by the manual GitHub workflow
+//   (.github/workflows/deploy-production.yml), which supplies secrets from
+//   the GitHub `production` environment.
 //
 // Local dev and Docker self-host do NOT use this stack (wrangler.jsonc +
 // @cloudflare/vite-plugin). This stack deploys the PREBUILT `vite build`
@@ -77,23 +79,28 @@ const PROD_NAMES = {
   r2: "open-seo",
   kv: "every-super-seo",
   oauthKv: "OAUTH_KV",
-  hyperdrive: "openseo",
 } as const;
 
-const makeResources = (stage: string) => {
+const makeResources = (stage: string, usesD1: boolean) => {
   const prod = stage === HOSTED_PROD_STAGE;
   // Prod adopts the LIVE resources; retain makes `alchemy destroy --stage
   // hosted-prod` (or an orphaning refactor) forget state instead of deleting
   // them.
   const keep = Alchemy.RemovalPolicy.retain(prod);
   return {
-    DB: Cloudflare.D1.Database("DB", {
-      name: prod ? PROD_NAMES.d1 : `open-seo-db-${stage}`,
-      // drizzle-generated SQL migrations; tracked in the same
-      // wrangler-compatible table prod already uses.
-      migrationsDir: "drizzle/sqlite",
-      migrationsTable: "d1_migrations",
-    }).pipe(keep),
+    // Postgres deploys never touch D1: no database, binding, or SQLite
+    // migrations. Dropping it forgets (never deletes) the retained prod D1.
+    ...(usesD1
+      ? {
+          DB: Cloudflare.D1.Database("DB", {
+            name: prod ? PROD_NAMES.d1 : `open-seo-db-${stage}`,
+            // drizzle-generated SQL migrations; tracked in the same
+            // wrangler-compatible table prod already uses.
+            migrationsDir: "drizzle/sqlite",
+            migrationsTable: "d1_migrations",
+          }).pipe(keep),
+        }
+      : {}),
     R2: Cloudflare.R2.Bucket("R2", {
       name: prod ? PROD_NAMES.r2 : `open-seo-r2-${stage}`,
       // Expire cached DataForSEO responses. Prod's lifecycle rules are
@@ -118,37 +125,25 @@ const makeResources = (stage: string) => {
     OAUTH_KV: Cloudflare.KV.Namespace("OAUTH_KV", {
       title: prod ? PROD_NAMES.oauthKv : `open-seo-oauth-kv-${stage}`,
     }).pipe(keep),
+    // Feature flags (src/server/lib/featureFlags.ts), app worker and prod
+    // only: every other stage, and every self-host, reads them all as off.
+    // Alchemy owns just the app. The flags themselves are created and flipped
+    // in the Cloudflare dashboard: a managed Flag resource would push its
+    // declared state back over a flip made during an outage whenever a deploy
+    // updated it.
+    ...(prod ? { FLAGS: Cloudflare.Flagship.App("FLAGS", {}).pipe(keep) } : {}),
   };
 };
 
-/**
- * Prod-only: the existing Hyperdrive config pooling connections to the
- * production Postgres. Origin credentials come from the env file — Cloudflare
- * never returns them, so alchemy must know them to manage the config.
- */
-const makeHyperdrive = () =>
-  Cloudflare.Hyperdrive.Connection("HYPERDRIVE", {
-    name: PROD_NAMES.hyperdrive,
-    origin: Config.all([
-      Config.string("HYPERDRIVE_ORIGIN_HOST"),
-      Config.string("HYPERDRIVE_ORIGIN_PORT").pipe(Config.withDefault("5432")),
-      Config.string("HYPERDRIVE_ORIGIN_DATABASE"),
-      Config.string("HYPERDRIVE_ORIGIN_USER"),
-      Config.redacted("HYPERDRIVE_ORIGIN_PASSWORD"),
-    ]).pipe(
-      Config.map(([host, port, database, user, password]) => ({
-        scheme: "postgres" as const,
-        host,
-        port: Number(port),
-        database,
-        user,
-        password,
-      })),
-    ),
-    // Prod runs with Hyperdrive caching OFF (no write invalidation for a SaaS
-    // with per-user reads-after-writes).
-    caching: { disabled: true },
-  }).pipe(Alchemy.RemovalPolicy.retain());
+// Prod-only: the existing Hyperdrive config bound by ID. A managed
+// Hyperdrive.Connection would need the origin password on every deploy, so
+// the config (caching OFF, origin connection limit 30) is managed in the
+// Cloudflare dashboard instead.
+const hyperdriveBinding = (hyperdriveId: string) => ({
+  bindings: [
+    { type: "hyperdrive" as const, name: "HYPERDRIVE", id: hyperdriveId },
+  ],
+});
 
 const optionalVar = (name: string) =>
   Config.string(name).pipe(
@@ -156,11 +151,53 @@ const optionalVar = (name: string) =>
     Config.map((value) => value.trim()),
   );
 
+/**
+ * A self-host's own hostname (seo.example.com), in a zone on this account. The
+ * Worker must list it, or each deploy detaches it. In Cloudflare Access mode
+ * the deploy-created Access application protects it too. Hosted prod serves
+ * its fixed domains instead.
+ */
+const readCustomDomain = (prod: boolean) =>
+  Effect.gen(function* () {
+    if (prod) return "";
+    const domain = yield* optionalVar("CUSTOM_DOMAIN");
+    if (domain && !/^[a-z0-9.-]+$/i.test(domain)) {
+      return yield* Effect.die(
+        new Error("CUSTOM_DOMAIN must be a bare hostname (seo.example.com)."),
+      );
+    }
+    return domain;
+  });
+
 const optionalSecret = (name: string) =>
-  Config.redacted(name).pipe(Config.withDefault(Redacted.make("")));
+  Config.redacted(name).pipe(
+    Config.withDefault(Redacted.make("")),
+    Config.map((value) => Redacted.make(Redacted.value(value).trim())),
+  );
 
 const accessScopeHint =
-  " (if this is a permissions error, re-run `pnpm alchemy login --configure`, answer yes to “Customize OAuth scopes?”, and select access:write alongside the defaults)";
+  " (if this is a permissions error, re-run `pnpm alchemy login deploy/alchemy/alchemy.run.ts --configure`, answer yes to “Customize OAuth scopes?”, and select access:write alongside the defaults)";
+
+/**
+ * The account's workers.dev subdomain (`<name>.workers.dev`): the configured
+ * WORKERS_SUBDOMAIN when set, else one API read. Every worker hostname this
+ * stack deploys derives from it.
+ */
+const resolveWorkersSubdomain = (configured: string, scopeHint: string) =>
+  Effect.gen(function* () {
+    if (configured) return configured;
+    const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
+    const observed = yield* CfWorkers.getSubdomain({ accountId }).pipe(
+      Effect.catch((error) =>
+        Effect.die(
+          new Error(
+            `Could not read the workers.dev subdomain: ${String(error)}${scopeHint}`,
+          ),
+        ),
+      ),
+    );
+    return `${observed.subdomain}.workers.dev`;
+  });
 
 /**
  * Self-host auth (AUTH_MODE=cloudflare_access): derive the Access values
@@ -176,6 +213,7 @@ const resolveSelfHostAccess = (
   stage: string,
   provision: boolean,
   workersSubdomain: string,
+  customDomain: string,
 ) =>
   Effect.gen(function* () {
     let teamDomain = yield* optionalVar("TEAM_DOMAIN");
@@ -187,20 +225,11 @@ const resolveSelfHostAccess = (
 
     // The workers.dev subdomain names both the Access application's hostname
     // (which must exist before the Worker resource does) and an auto-created
-    // Zero Trust team; it is deterministic from the account.
-    let subdomain = workersSubdomain;
-    if (!subdomain) {
-      const observed = yield* CfWorkers.getSubdomain({ accountId }).pipe(
-        Effect.catch((error) =>
-          Effect.die(
-            new Error(
-              `Could not read the workers.dev subdomain: ${String(error)}${accessScopeHint}`,
-            ),
-          ),
-        ),
-      );
-      subdomain = `${observed.subdomain}.workers.dev`;
-    }
+    // Zero Trust team.
+    const subdomain = yield* resolveWorkersSubdomain(
+      workersSubdomain,
+      accessScopeHint,
+    );
 
     if (!teamDomain) {
       const organization = yield* ZeroTrust.listOrganizationsForAccount({
@@ -210,7 +239,11 @@ const resolveSelfHostAccess = (
         Effect.catch((error) =>
           Effect.die(
             new Error(
-              `Could not read the Zero Trust organization: ${String(error)}${accessScopeHint}`,
+              // A 403 access.api.error.not_enabled means Zero Trust was never
+              // turned on for the account, not a missing login scope.
+              String(error).includes("not_enabled")
+                ? "Zero Trust isn't enabled on this Cloudflare account yet. Open https://one.dash.cloudflare.com once and pick the Free plan (Cloudflare creates the team for you), then redeploy."
+                : `Could not read the Zero Trust organization: ${String(error)}${accessScopeHint}`,
             ),
           ),
         ),
@@ -251,7 +284,9 @@ const resolveSelfHostAccess = (
         policyName: `open-seo ${stage} self-host users`,
         applicationName: `open-seo ${stage}`,
         domain: `${workerName(stage)}.${subdomain}`,
+        extraDomain: customDomain || undefined,
         emails: allowedEmails,
+        managedOAuth: true,
       });
       policyAud = application.aud;
     }
@@ -259,25 +294,104 @@ const resolveSelfHostAccess = (
     return { teamDomain, policyAud };
   });
 
-// Secrets/vars resolve from the env file passed to `alchemy deploy`
-// (`Config.redacted` → Cloudflare `secret_text`, `Config.string` → plaintext
-// var). NOTE: the alchemy CLI loads `--env-file` into the Config environment,
-// NOT into process.env — a process.env read here silently yields "".
+// Paid-plan Worker limits. A workflow run shares one subrequest budget across
+// its steps: a 10,000-page audit spent the 10,000 default before its
+// Lighthouse and billing calls, and a self-hosted AI visibility check spent it
+// partway through its answers.
+const PAID_WORKER_LIMITS = { cpuMs: 300_000, subrequests: 1_000_000 };
+
+/**
+ * The `limits` both workers deploy with. Hosted runs on Workers Paid. A
+ * self-host may run on Workers Free, which refuses PAID_WORKER_LIMITS (it caps
+ * subrequests at 50) and keeps the plan's defaults. The deploy's login can't
+ * read the account's plan, so a throwaway plan-check Worker asks Cloudflare:
+ * one upload with the limits and, only when that is refused, one without. A
+ * failure of the second upload is a real deploy problem, so it fails the
+ * deploy.
+ */
+const resolveWorkerLimits = (stage: string, selfHost: boolean) =>
+  Effect.gen(function* () {
+    if (!selfHost) return { limits: PAID_WORKER_LIMITS };
+    const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
+    // A fixed name, so a check left behind by an interrupted deploy is
+    // replaced and deleted by the next one.
+    const scriptName = `${workerName(stage)}-plan-check`;
+    const upload = (limits?: typeof PAID_WORKER_LIMITS) =>
+      CfWorkers.putScript({
+        accountId,
+        scriptName,
+        metadata: {
+          mainModule: "probe.js",
+          compatibilityDate: wrangler.compatibility_date,
+          limits,
+        },
+        files: [
+          new File(
+            [
+              "export default { fetch: () => new Response(null, { status: 404 }) };",
+            ],
+            "probe.js",
+            { type: "application/javascript+module" },
+          ),
+        ],
+      });
+    const accepted = yield* upload(PAID_WORKER_LIMITS).pipe(
+      Effect.as(true),
+      Effect.catch(() => upload().pipe(Effect.as(false))),
+      Effect.catch((error) =>
+        Effect.die(
+          new Error(
+            `Could not upload a Worker to check the account's limits: ${String(error)}`,
+          ),
+        ),
+      ),
+    );
+    yield* CfWorkers.deleteScript({ accountId, scriptName }).pipe(
+      Effect.catch((error) =>
+        Effect.die(
+          new Error(`Could not delete ${scriptName}: ${String(error)}`),
+        ),
+      ),
+    );
+    if (accepted) return { limits: PAID_WORKER_LIMITS };
+    yield* Console.log(
+      "Workers Free: deploying with the plan's default limits. Site audits and AI visibility need Workers Paid (docs/SELF_HOSTING_CLOUDFLARE.md).",
+    );
+    return {};
+  });
+
+// Secrets/vars resolve from Config (`Config.redacted` → Cloudflare
+// `secret_text`, `Config.string` → plaintext var). Previews and self-host pass
+// an `--env-file`, which the alchemy CLI loads into Config, NOT process.env;
+// the production workflow exports them as job/step env instead.
 const dataEnv = {
-  // AUTH_MODE, DATABASE_PROVIDER, BETTER_AUTH_URL, TEAM_DOMAIN, and
-  // POLICY_AUD are stage-dependent and set in the stack body below.
-  DATAFORSEO_API_KEY: Config.redacted("DATAFORSEO_API_KEY"),
+  // AUTH_MODE, DATABASE_PROVIDER, BETTER_AUTH_URL, TEAM_DOMAIN, POLICY_AUD,
+  // and OPENSEO_OPERATOR_SECRET are stage-dependent and set in the stack body
+  // below, which also replaces an unset BETTER_AUTH_SECRET in password mode.
+  DATAFORSEO_API_KEY: optionalSecret("DATAFORSEO_API_KEY"),
+  TREG_API_TOKEN: optionalSecret("TREG_API_TOKEN"),
   BYPASS_EMAIL_VERIFICATION: optionalVar("BYPASS_EMAIL_VERIFICATION"),
   BETTER_AUTH_SECRET: optionalSecret("BETTER_AUTH_SECRET"),
+  CRAWLER_ACCESS_SECRET: optionalSecret("CRAWLER_ACCESS_SECRET"),
+  WEB_BOT_AUTH_JWK: optionalSecret("WEB_BOT_AUTH_JWK"),
   GOOGLE_CLIENT_ID: optionalVar("GOOGLE_CLIENT_ID"),
   GOOGLE_CLIENT_SECRET: optionalSecret("GOOGLE_CLIENT_SECRET"),
+  GOOGLE_MAPS_API_KEY: optionalSecret("GOOGLE_MAPS_API_KEY"),
+  // Sign in with ChatGPT (hosted only). Unset = no button.
+  OPENAI_SIWC_CLIENT_ID: optionalVar("OPENAI_SIWC_CLIENT_ID"),
+  OPENAI_SIWC_CLIENT_SECRET: optionalSecret("OPENAI_SIWC_CLIENT_SECRET"),
   OPENROUTER_API_KEY: optionalSecret("OPENROUTER_API_KEY"),
+  OPENROUTER_BASE_URL: optionalVar("OPENROUTER_BASE_URL"),
   OPENROUTER_MODEL: optionalVar("OPENROUTER_MODEL"),
   CONTEXT_API_KEY: optionalSecret("CONTEXT_API_KEY"),
   AUTUMN_SECRET_KEY: optionalSecret("AUTUMN_SECRET_KEY"),
   AUTUMN_WEBHOOK_SECRET: optionalSecret("AUTUMN_WEBHOOK_SECRET"),
   DUB_API_KEY: optionalSecret("DUB_API_KEY"),
-  GDPR_ERASURE_SECRET: optionalSecret("GDPR_ERASURE_SECRET"),
+  STRIPE_PROJECTS_SIGNING_SECRET: optionalSecret(
+    "STRIPE_PROJECTS_SIGNING_SECRET",
+  ),
+  META_PIXEL_ID: optionalVar("META_PIXEL_ID"),
+  META_CONVERSIONS_API_TOKEN: optionalSecret("META_CONVERSIONS_API_TOKEN"),
   LOOPS_API_KEY: optionalSecret("LOOPS_API_KEY"),
   LOOPS_TRANSACTIONAL_VERIFY_EMAIL_ID: optionalVar(
     "LOOPS_TRANSACTIONAL_VERIFY_EMAIL_ID",
@@ -288,14 +402,47 @@ const dataEnv = {
   LOOPS_TRANSACTIONAL_INVITATION_ID: optionalVar(
     "LOOPS_TRANSACTIONAL_INVITATION_ID",
   ),
+  LOOPS_PRODUCT_UPDATES_LIST_ID: optionalVar("LOOPS_PRODUCT_UPDATES_LIST_ID"),
+  LOOPS_TRANSACTIONAL_ACCOUNT_DELETION_ID: optionalVar(
+    "LOOPS_TRANSACTIONAL_ACCOUNT_DELETION_ID",
+  ),
   POSTHOG_PUBLIC_KEY: optionalVar("POSTHOG_PUBLIC_KEY"),
   POSTHOG_HOST: optionalVar("POSTHOG_HOST"),
+  POSTHOG_PROJECT_ID: optionalVar("POSTHOG_PROJECT_ID"),
+  POSTHOG_ACCOUNT_DELETION_API_KEY: optionalSecret(
+    "POSTHOG_ACCOUNT_DELETION_API_KEY",
+  ),
   TURNSTILE_SECRET_KEY: optionalSecret("TURNSTILE_SECRET_KEY"),
   TURNSTILE_SITE_KEY: optionalVar("TURNSTILE_SITE_KEY"),
-  // Alchemy reconciles worker vars on every deploy, so the telemetry opt-out
-  // must live in the env file — a dashboard-set var would be wiped.
+  // Trustpilot review invitations (src/server/trustpilot). Unset = inert.
+  TRUSTPILOT_API_KEY: optionalSecret("TRUSTPILOT_API_KEY"),
+  TRUSTPILOT_API_SECRET: optionalSecret("TRUSTPILOT_API_SECRET"),
+  TRUSTPILOT_BUSINESS_UNIT_ID: optionalVar("TRUSTPILOT_BUSINESS_UNIT_ID"),
+  TRUSTPILOT_BUSINESS_USER_ID: optionalVar("TRUSTPILOT_BUSINESS_USER_ID"),
+  TRUSTPILOT_TEMPLATE_ID: optionalVar("TRUSTPILOT_TEMPLATE_ID"),
+  // Alchemy reconciles worker vars and secrets on every deploy, so every value
+  // must come from the env file / GitHub environment — a dashboard-set one
+  // would be wiped.
   OPENSEO_TELEMETRY_DISABLED: optionalVar("OPENSEO_TELEMETRY_DISABLED"),
 };
+
+const requireDataForSeoCredentials = (prod: boolean) =>
+  Effect.gen(function* () {
+    const dataforseoApiKey = Redacted.value(yield* dataEnv.DATAFORSEO_API_KEY);
+    const tregApiToken = Redacted.value(yield* dataEnv.TREG_API_TOKEN);
+    if (prod && !dataforseoApiKey) {
+      return yield* Effect.die(
+        new Error("hosted-prod requires DATAFORSEO_API_KEY."),
+      );
+    }
+    if (!dataforseoApiKey && !tregApiToken) {
+      return yield* Effect.die(
+        new Error(
+          "Set DATAFORSEO_API_KEY or TREG_API_TOKEN — see docs/DATAFORSEO_API_KEY.md.",
+        ),
+      );
+    }
+  });
 
 export default Alchemy.Stack(
   "open-seo",
@@ -311,12 +458,23 @@ export default Alchemy.Stack(
     const prod = stage === HOSTED_PROD_STAGE;
     // Fail closed: an unset AUTH_MODE gets the Access-gated mode (matching the
     // app's own default in src/lib/auth-mode.ts), never public hosted signup.
+    // New self-host deployments get AUTH_MODE=password from deploy/.env.selfhost.example;
     // hosted/local_noauth must be set explicitly.
     const authMode = yield* Config.string("AUTH_MODE").pipe(
       Config.withDefault("cloudflare_access"),
     );
     const databaseProvider = yield* optionalVar("DATABASE_PROVIDER");
+    const hyperdriveId = prod ? yield* Config.string("HYPERDRIVE_ID") : "";
+    if (prod && (authMode !== "hosted" || databaseProvider !== "postgres")) {
+      return yield* Effect.die(
+        new Error(
+          "hosted-prod requires AUTH_MODE=hosted and DATABASE_PROVIDER=postgres.",
+        ),
+      );
+    }
+    yield* requireDataForSeoCredentials(prod);
     const workersSubdomain = yield* readWorkersSubdomain({ required: false });
+    const customDomain = yield* readCustomDomain(prod);
 
     // Auth needs an absolute BETTER_AUTH_URL. Prod sets it explicitly;
     // previews always derive it from the deterministic worker name — a wrong
@@ -327,21 +485,20 @@ export default Alchemy.Stack(
       if (!authUrl) {
         return yield* Effect.die(
           new Error(
-            "Set BETTER_AUTH_URL (https://app.openseo.so) in .env.production.",
+            "Set BETTER_AUTH_URL (https://app.openseo.so) in the production workflow.",
           ),
         );
       }
-      // Prod must say which database it runs on. A silently-defaulted "d1"
-      // would deploy cleanly against the stale pre-Postgres data.
-      if (databaseProvider !== "postgres" && databaseProvider !== "d1") {
-        return yield* Effect.die(
-          new Error(
-            "Set DATABASE_PROVIDER explicitly in .env.production (prod runs postgres).",
-          ),
-        );
-      }
+    } else if (customDomain) {
+      authUrl = `https://${customDomain}`;
     } else if (workersSubdomain) {
       authUrl = `https://${workerName(stage)}.${workersSubdomain}`;
+    } else if (authMode === "password") {
+      // Password accounts need the real public URL (session cookies, the
+      // OAuth callbacks MCP clients use). The self-host env file sets no
+      // WORKERS_SUBDOMAIN, so read it from the account.
+      const subdomain = yield* resolveWorkersSubdomain(workersSubdomain, "");
+      authUrl = `https://${workerName(stage)}.${subdomain}`;
     } else if (authMode === "hosted") {
       return yield* Effect.die(
         new Error(
@@ -358,12 +515,31 @@ export default Alchemy.Stack(
       stage,
       authMode === "cloudflare_access" && !prod,
       workersSubdomain,
+      customDomain,
+    );
+
+    // Password accounts need a session secret. The self-host env file sets
+    // none: the deploy mints one and keeps it in alchemy state, so redeploys
+    // keep every session valid. An explicit BETTER_AUTH_SECRET always wins.
+    const configuredAuthSecret = yield* dataEnv.BETTER_AUTH_SECRET;
+    const betterAuthSecret =
+      authMode === "password" && !Redacted.value(configuredAuthSecret)
+        ? yield* Alchemy.makeRandom("BetterAuthSecret")
+        : configuredAuthSecret;
+    // Operator account commands (`pnpm selfhost:admin`: password resets,
+    // accounts outside the invitation flow) stay off until the self-hoster
+    // sets a secret for them.
+    const operatorSecret = yield* optionalSecret("OPENSEO_OPERATOR_SECRET");
+
+    const workerLimits = yield* resolveWorkerLimits(
+      stage,
+      authMode === "cloudflare_access" || authMode === "password",
     );
 
     // Created once and bound into BOTH workers — they share the same
-    // D1/KV/R2 (and prod Hyperdrive). OAUTH_KV stays app-worker-only.
-    const resources = makeResources(stage);
-    const prodHyperdrive = prod ? makeHyperdrive() : undefined;
+    // D1/KV/R2 (and prod Hyperdrive). OAUTH_KV and FLAGS stay
+    // app-worker-only.
+    const resources = makeResources(stage, databaseProvider !== "postgres");
 
     // Aux worker: the site-audit engine (src/audit-worker.ts) — the
     // SiteAuditWorkflow orchestrator and the per-audit AuditScratchpad DO.
@@ -381,33 +557,33 @@ export default Alchemy.Stack(
         flags: wrangler.compatibility_flags,
       },
       // Audit workflow steps parse and persist batches of HTML — the same
-      // CPU allowance the app worker used to carry for them. Configurable
-      // CPU limits are a paid-plan feature; self-host deploys
-      // (cloudflare_access) may run on the free plan, which rejects them.
-      ...(authMode === "cloudflare_access"
-        ? {}
-        : { limits: { cpuMs: 300_000 } }),
+      // CPU allowance the app worker used to carry for them.
+      ...workerLimits,
       observability: {
         enabled: wrangler.observability?.enabled ?? true,
         traces: { enabled: wrangler.observability?.traces?.enabled ?? false },
       },
       env: {
-        DB: resources.DB,
+        ...(resources.DB ? { DB: resources.DB } : {}),
         KV: resources.KV,
         R2: resources.R2,
         // Deliberately NOT ...dataEnv: this worker crawls and parses
         // attacker-influenced HTML, so it gets only the secrets its code
-        // path reads — DataForSEO (Lighthouse), Autumn (metering), PostHog
-        // (capture). No auth/OAuth/Loops/Turnstile secrets.
+        // path reads — DataForSEO / treg (Lighthouse), Autumn (metering),
+        // PostHog (capture), CRAWLER_ACCESS_SECRET (Shopify signatures),
+        // WEB_BOT_AUTH_JWK (request signing). No auth/OAuth/Loops/Turnstile
+        // secrets.
         BROWSER: Cloudflare.Browser(),
+        CRAWLER_ACCESS_SECRET: dataEnv.CRAWLER_ACCESS_SECRET,
+        WEB_BOT_AUTH_JWK: dataEnv.WEB_BOT_AUTH_JWK,
         CONTEXT_API_KEY: dataEnv.CONTEXT_API_KEY,
         DATAFORSEO_API_KEY: dataEnv.DATAFORSEO_API_KEY,
+        TREG_API_TOKEN: dataEnv.TREG_API_TOKEN,
         AUTUMN_SECRET_KEY: dataEnv.AUTUMN_SECRET_KEY,
         POSTHOG_PUBLIC_KEY: dataEnv.POSTHOG_PUBLIC_KEY,
         POSTHOG_HOST: dataEnv.POSTHOG_HOST,
         AUTH_MODE: authMode,
         DATABASE_PROVIDER: databaseProvider || "d1",
-        ...(prodHyperdrive ? { HYPERDRIVE: prodHyperdrive } : {}),
         // This worker is the code home of the scratchpad DO and the
         // site-audit workflow; the app worker binds to both cross-script.
         AUDIT_SCRATCHPAD: Cloudflare.DurableObject("AUDIT_SCRATCHPAD", {
@@ -424,10 +600,16 @@ export default Alchemy.Stack(
       },
     }).pipe(Alchemy.RemovalPolicy.retain(prod));
 
+    if (prod) {
+      yield* auditWorker.bind("hyperdrive", hyperdriveBinding(hyperdriveId));
+    }
+
     const app = yield* Cloudflare.Worker("open-seo", {
       name: workerName(stage),
       // Prod serves the real domains; the zone is inferred from the hostname.
-      domain: prod ? ["app.openseo.so", "www.app.openseo.so"] : undefined,
+      domain: prod
+        ? ["app.openseo.so", "www.app.openseo.so"]
+        : customDomain || undefined,
       // Prebuilt worker from `vite build` (@cloudflare/vite-plugin). The entry
       // exports the DO + WorkflowEntrypoint classes (re-exported by
       // src/server.ts), which `bundle: false` requires. Sibling chunks under
@@ -441,15 +623,9 @@ export default Alchemy.Stack(
         date: wrangler.compatibility_date,
         flags: wrangler.compatibility_flags,
       },
-      // Site audits moved to the open-seo-audit worker, but RankCheckWorkflow
-      // still parses SERP batches here — keep the CPU allowance until that
-      // workflow's per-tick CPU is measured or it moves too. Configurable CPU
-      // limits are a paid-plan feature, and self-host deploys
-      // (cloudflare_access) may run on the free plan — which rejects them —
-      // so those get the plan default instead.
-      ...(authMode === "cloudflare_access"
-        ? {}
-        : { limits: { cpuMs: 300_000 } }),
+      // RankCheckWorkflow parses SERP batches here, and AI visibility runs
+      // make an outgoing request per answer.
+      ...workerLimits,
       observability: {
         enabled: wrangler.observability?.enabled ?? true,
         traces: { enabled: wrangler.observability?.traces?.enabled ?? false },
@@ -471,18 +647,18 @@ export default Alchemy.Stack(
         AUTH_MODE: authMode,
         DATABASE_PROVIDER: databaseProvider || "d1",
         BETTER_AUTH_URL: authUrl,
+        BETTER_AUTH_SECRET: betterAuthSecret,
+        ...(authMode === "password" && Redacted.value(operatorSecret)
+          ? { OPENSEO_OPERATOR_SECRET: operatorSecret }
+          : {}),
         // The audit worker above always binds BROWSER; the app worker checks
         // this before it offers "Render JavaScript".
         AUDIT_BROWSER_RENDERING: "true",
         TEAM_DOMAIN: access.teamDomain,
         POLICY_AUD: access.policyAud,
 
-        // Prod-only: pooled Postgres via the existing Hyperdrive config.
-        ...(prodHyperdrive ? { HYPERDRIVE: prodHyperdrive } : {}),
-
-        // Service binding to the audit worker's AuditEngine entrypoint
-        // (cancel + GDPR erasure of scratchpad state; env key = binding
-        // name).
+        // Service binding to the audit worker's AuditEngine entrypoint (cancel
+        // and account deletion's scratchpad wipe; env key = binding name).
         AUDIT_ENGINE: auditWorker,
 
         // Per-user throttle for /mcp API-key auth (see
@@ -492,6 +668,39 @@ export default Alchemy.Stack(
         MCP_RATE_LIMIT: Cloudflare.RateLimit("MCP_RATE_LIMIT", {
           namespaceId: 1001,
           simple: { limit: 5000, period: 60 },
+        }),
+
+        // Throttle for password sign-in and the reset and verification
+        // emails, per IP and per email address (see
+        // src/server/auth/auth-rate-limit.ts). Generous enough that no real
+        // person or shared office IP hits it.
+        AUTH_RATE_LIMIT: Cloudflare.RateLimit("AUTH_RATE_LIMIT", {
+          namespaceId: 1002,
+          simple: { limit: 20, period: 60 },
+        }),
+
+        // Per-organization throttle on saving keywords (see
+        // src/server/features/keywords/services/research/saved-keywords.ts).
+        // One call per 50 keywords: 60 a minute is 3,000 keywords a minute.
+        SAVE_KEYWORDS_RATE_LIMIT: Cloudflare.RateLimit(
+          "SAVE_KEYWORDS_RATE_LIMIT",
+          { namespaceId: 1003, simple: { limit: 60, period: 60 } },
+        ),
+
+        // Per-IP throttle on the reports browsers post about the report-only
+        // Content-Security-Policy (see src/server/lib/csp.ts). A page that
+        // trips the policy sends a handful at once.
+        CSP_REPORT_RATE_LIMIT: Cloudflare.RateLimit("CSP_REPORT_RATE_LIMIT", {
+          namespaceId: 1004,
+          simple: { limit: 30, period: 60 },
+        }),
+
+        // Per-link throttle on embed links' widget calls (see
+        // src/server/features/embeds/embedRoutes.ts). A page load makes a few;
+        // this bounds the Search Console calls one public link can make.
+        EMBED_RATE_LIMIT: Cloudflare.RateLimit("EMBED_RATE_LIMIT", {
+          namespaceId: 1005,
+          simple: { limit: 60, period: 60 },
         }),
 
         // Durable Objects (the chat agents; the audit scratchpad lives
@@ -536,6 +745,10 @@ export default Alchemy.Stack(
       // is a lossless upsert, unlike deleting the data-bearing resources.)
       Alchemy.RemovalPolicy.retain(prod),
     );
+
+    if (prod) {
+      yield* app.bind("hyperdrive", hyperdriveBinding(hyperdriveId));
+    }
 
     return { url: app.url.as<string>() };
   }),

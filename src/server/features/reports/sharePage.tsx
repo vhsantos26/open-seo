@@ -111,7 +111,7 @@ function Document({
           content="width=device-width, initial-scale=1, viewport-fit=cover"
         />
         <meta name="robots" content="noindex, nofollow" />
-        <title>{`${title} · OpenSEO`}</title>
+        <title>{`${title} - OpenSEO`}</title>
         {head}
         <link rel="icon" href="/favicon.ico" />
         <style dangerouslySetInnerHTML={{ __html: STYLES }} />
@@ -160,11 +160,13 @@ const missing = () =>
 /**
  * The public page. Reads the same row the raw endpoint reads and puts the frame
  * pointing at `/s/<token>/raw` straight into the HTML, so the browser requests
- * the document as soon as it has parsed the head.
+ * the document as soon as it has parsed the head. `nonce` is the one the
+ * response's Content-Security-Policy names (server.ts), for the Share script.
  */
 export async function renderSharePage(
   token: string,
   request: Request,
+  nonce: string,
 ): Promise<Response> {
   if (!(await sharesEnabled())) return missing();
   if (!SHARE_TOKEN_PATTERN.test(token)) return missing();
@@ -208,11 +210,11 @@ export async function renderSharePage(
           <meta property="og:image" content={imageUrl} />
           <meta property="og:image:width" content="1200" />
           <meta property="og:image:height" content="630" />
-          <meta property="og:image:alt" content={`${report.title} · OpenSEO`} />
+          <meta property="og:image:alt" content={`${report.title} - OpenSEO`} />
           <meta name="twitter:image" content={imageUrl} />
           <meta
             name="twitter:image:alt"
-            content={`${report.title} · OpenSEO`}
+            content={`${report.title} - OpenSEO`}
           />
           <meta name="twitter:card" content="summary_large_image" />
         </>
@@ -253,7 +255,10 @@ export async function renderSharePage(
         referrerPolicy="no-referrer"
         title={report.title}
       />
-      <script dangerouslySetInnerHTML={{ __html: SHARE_SCRIPT }} />
+      <script
+        nonce={nonce}
+        dangerouslySetInnerHTML={{ __html: SHARE_SCRIPT }}
+      />
     </Document>,
     200,
   );
