@@ -1,4 +1,6 @@
 import { Link } from "@tanstack/react-router";
+import { PrivacyChoicesLink } from "@/components/privacy-choices";
+import { SocialLinks } from "@/components/social-links";
 import { featureGroups } from "@/lib/feature-pages";
 import { freeToolList } from "@/lib/free-tools/tool-pages";
 
@@ -15,6 +17,9 @@ export function SiteFooter({ className }: { className?: string }) {
       <Link to="/" className="text-sm font-semibold text-neutral-900">
         OpenSEO
       </Link>
+      <p className="mt-1">
+        Part of <a href="https://everyapp.com">EveryApp</a>
+      </p>
 
       <div className="mt-6 grid grid-cols-2 gap-8 md:grid-cols-[repeat(auto-fit,minmax(9rem,1fr))]">
         <div>
@@ -43,6 +48,7 @@ export function SiteFooter({ className }: { className?: string }) {
           <div>
             <p className="font-semibold text-neutral-900">Compare</p>
             <div className="mt-2 flex flex-col gap-1.5">
+              <Link to="/openseo-vs-dataforseo">OpenSEO vs DataForSEO</Link>
               <Link to="/semrush-alternative">Semrush alternative</Link>
               <Link to="/semrush-pricing">Semrush pricing</Link>
               <Link to="/ahrefs-alternative">Ahrefs alternative</Link>
@@ -57,7 +63,7 @@ export function SiteFooter({ className }: { className?: string }) {
             <a href="/docs/mcp">MCP</a>
             <a href="/docs/skills">Skills</a>
             <Link to="/library">Strategy Library</Link>
-            <Link to="/open-source-seo">Why Open Source?</Link>
+            <Link to="/open-source-seo">Open Source</Link>
             <Link to="/blogs">Blog</Link>
             <a href="/docs">Docs</a>
           </div>
@@ -102,11 +108,12 @@ export function SiteFooter({ className }: { className?: string }) {
             </a>
             <Link to="/privacy">Privacy</Link>
             <Link to="/terms-and-conditions">Terms</Link>
+            <PrivacyChoicesLink />
           </div>
         </div>
       </div>
 
-      <div className="mt-8">
+      <div className="mt-8 flex flex-wrap items-center justify-between gap-x-8 gap-y-4">
         <a
           href="https://www.ycombinator.com/companies/openseo"
           target="_blank"
@@ -116,6 +123,7 @@ export function SiteFooter({ className }: { className?: string }) {
           <img src="/y-combinator.svg" alt="" width={24} height={24} />
           <span>Backed by Y Combinator</span>
         </a>
+        <SocialLinks />
       </div>
     </div>
   );

@@ -1,4 +1,9 @@
-import { isAuditRenderingAllowed } from "@/server/lib/audit/rendering-policy";
+import { AuditStatus } from "@/shared/audit-status";
+import { markOnboardingMilestone } from "@/server/email/onboarding-drip";
+import {
+  auditRenderingUnavailableMessage,
+  isAuditRenderingAllowed,
+} from "@/server/lib/audit/rendering-policy";
 import {
   lockRenderingCredits,
   releaseRenderingLocks,
@@ -6,7 +11,6 @@ import {
 } from "@/server/lib/audit/rendering-billing";
 import { env } from "cloudflare:workers";
 import {
-  customerHasManagedAccess,
   customerHasPaidPlan,
   getOrCreateOrganizationCustomer,
   type BillingCustomerContext,
@@ -20,39 +24,26 @@ import {
   type AuditLimitTier,
 } from "@/server/features/audit/services/audit-capacity";
 import { AppError } from "@/server/lib/errors";
-import { RENDERED_MAX_AUDIT_PAGES } from "@/shared/audit-limits";
+import { deleteR2Prefix } from "@/server/lib/r2";
 import { AuditProgressKV } from "@/server/lib/audit/progress-kv";
 import {
   parseAuditConfig,
   type AuditConfig,
   type LighthouseStrategy,
 } from "@/server/lib/audit/types";
-import {
-  normalizeAndValidateStartUrl,
-  resolveStartUrlRedirects,
-} from "@/server/lib/audit/url-policy";
+import { normalizeAndValidateStartUrl } from "@/server/lib/audit/url-policy";
 import { reconcileRunningAudit } from "@/server/features/audit/services/auditReconciler";
 import { isHostedServerAuthMode } from "@/server/lib/runtime-env";
+import { startWorkflow } from "@/server/lib/startWorkflow";
+import { findExcludingPath } from "@/shared/audit-exclude-paths";
 
-// Plan-tier limits are the abuse bound in hosted mode: free accounts get small
-// audits with a bounded burst, paid keeps the full limits, and customers with
-// no Autumn product at all are turned away. Self-hosted isn't gated.
+// Free accounts keep bounded audit capacity; rendering reserves usage credits.
 async function resolveAuditLimitTier(
   customer: BillingCustomerContext,
 ): Promise<AuditLimitTier> {
   if (!(await isHostedServerAuthMode())) return "self_hosted";
-  // An org minted outside a billing path (better-auth hooks, MCP auth) has no
-  // Autumn customer yet, and `check` 404s instead of reporting no access — a
-  // brand-new MCP user's first audit failed with a raw billing error.
   await getOrCreateOrganizationCustomer(customer);
-  const [hasManagedAccess, hasPaidPlan] = await Promise.all([
-    customerHasManagedAccess(customer.organizationId),
-    customerHasPaidPlan(customer.organizationId),
-  ]);
-  if (!hasManagedAccess) {
-    throw new AppError("PAYMENT_REQUIRED", "Subscribe to run site audits");
-  }
-  return hasPaidPlan ? "paid" : "free";
+  return (await customerHasPaidPlan(customer.organizationId)) ? "paid" : "free";
 }
 
 async function startAudit(input: {
@@ -64,24 +55,19 @@ async function startAudit(input: {
   lighthouseStrategy?: LighthouseStrategy;
   limitTier: AuditLimitTier;
   renderJavaScript?: boolean;
+  excludePaths?: string[];
 }) {
   const renderJavaScript = input.renderJavaScript ?? false;
   if (renderJavaScript && !(await isAuditRenderingAllowed())) {
     throw new AppError(
-      "FORBIDDEN",
-      "JavaScript rendering is not available on this deployment. It needs a Cloudflare deployment with Browser Run, or CONTEXT_API_KEY. Run the audit without rendering instead.",
+      "AUDIT_RENDERING_UNAVAILABLE",
+      await auditRenderingUnavailableMessage(),
     );
   }
   const limits = AUDIT_LIMITS[input.limitTier];
   const maxPages = clampAuditMaxPages(input.maxPages);
   if (maxPages > limits.maxPagesPerAudit) {
     throw new AppError("AUDIT_PAGE_LIMIT_EXCEEDED");
-  }
-  if (renderJavaScript && maxPages > RENDERED_MAX_AUDIT_PAGES) {
-    throw new AppError(
-      "AUDIT_PAGE_LIMIT_EXCEEDED",
-      `Audits that render JavaScript are limited to ${RENDERED_MAX_AUDIT_PAGES.toLocaleString("en-US")} pages.`,
-    );
   }
 
   const lighthouseStrategy = input.lighthouseStrategy ?? "auto";
@@ -92,40 +78,29 @@ async function startAudit(input: {
 
   const auditId = crypto.randomUUID();
   const organizationId = input.billingCustomer.organizationId;
-  const requestedUrl = await normalizeAndValidateStartUrl(input.startUrl);
-  // The probe itself can be rate limited, so it carries the credential too.
-  let credential = await CrawlerCredentialService.resolveCrawlerAccess(
-    organizationId,
-    input.projectId,
-    new URL(requestedUrl).hostname,
-  );
-  // Anchor the audit to the site's real origin: a start domain that 301s
-  // elsewhere (…net -> …com, apex -> www) would otherwise dead-end after
-  // one page at the same-origin crawl boundary.
-  const probe = await resolveStartUrlRedirects(
-    requestedUrl,
-    await CrawlerCredentialService.openCrawlerAccess(credential?.sealed),
-  );
-  const startUrl = probe.url;
-  const startHost = new URL(startUrl).hostname;
-  if (startHost !== new URL(requestedUrl).hostname) {
-    credential = await CrawlerCredentialService.resolveCrawlerAccess(
-      organizationId,
-      input.projectId,
-      startHost,
+  // The site itself is first contacted by the workflow's first step
+  // (resolveAuditStart), so starting an audit never waits on a slow site.
+  const startUrl = await normalizeAndValidateStartUrl(input.startUrl);
+  const excludePaths = Array.from(new Set(input.excludePaths));
+  const excludingPath = findExcludingPath(excludePaths, startUrl);
+  if (excludingPath) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      `The start URL is excluded by "${excludingPath}". Remove that path or start from a different URL.`,
     );
   }
+  const credential = await CrawlerCredentialService.resolveCrawlerAccess(
+    organizationId,
+    input.projectId,
+    new URL(startUrl).hostname,
+  );
 
   const config: AuditConfig = {
     maxPages,
     lighthouseStrategy,
     renderJavaScript,
-    // Shopify storefronts answer with `powered-by: Shopify`; knowing this is
-    // what lets the report explain a throttled crawl instead of shrugging.
-    sitePlatform: probe.poweredBy?.toLowerCase().includes("shopify")
-      ? "shopify"
-      : undefined,
     crawlerCredentialId: credential?.id,
+    ...(excludePaths.length > 0 && { excludePaths }),
   };
 
   await AuditRepository.createAudit({
@@ -167,23 +142,27 @@ async function startAudit(input: {
       });
     }
 
-    await env.SITE_AUDIT_WORKFLOW.create({
-      id: auditId,
-      params: {
-        auditId,
-        billingCustomer: {
-          userId: input.billingCustomer.userId,
-          userEmail: input.billingCustomer.userEmail,
-          organizationId: input.billingCustomer.organizationId,
-          projectId: input.billingCustomer.projectId,
+    await startWorkflow(
+      env.SITE_AUDIT_WORKFLOW,
+      {
+        id: auditId,
+        params: {
+          auditId,
+          billingCustomer: {
+            userId: input.billingCustomer.userId,
+            userEmail: input.billingCustomer.userEmail,
+            organizationId: input.billingCustomer.organizationId,
+            projectId: input.billingCustomer.projectId,
+          },
+          projectId: input.projectId,
+          startUrl,
+          config,
+          access: credential?.sealed,
+          renderLocks,
         },
-        projectId: input.projectId,
-        startUrl,
-        config,
-        access: credential?.sealed,
-        renderLocks,
       },
-    });
+      "site audit",
+    );
   } catch (error) {
     try {
       const instance = await env.SITE_AUDIT_WORKFLOW.get(auditId);
@@ -197,6 +176,7 @@ async function startAudit(input: {
     throw error;
   }
 
+  await markOnboardingMilestone(input.billingCustomer, "auditStarted");
   return { auditId };
 }
 
@@ -208,7 +188,7 @@ async function getStatus(auditId: string, projectId: string) {
   // Self-heal audits whose workflow died without reaching the mark-failed
   // step (instance terminated/errored, instance expired from retention, ...).
   // Without this they stay "running" forever and hold capacity.
-  if (audit.status === "running") {
+  if (audit.status === AuditStatus.Running) {
     const reconciled = await reconcileRunningAudit(audit);
     if (reconciled) {
       audit =
@@ -226,37 +206,10 @@ async function getStatus(auditId: string, projectId: string) {
     lighthouseCompleted: audit.lighthouseCompleted,
     lighthouseFailed: audit.lighthouseFailed,
     currentPhase: audit.currentPhase,
+    excludePaths: parseAuditConfig(audit.config)?.excludePaths ?? [],
     errorCode: audit.errorCode,
     startedAt: audit.startedAt,
     completedAt: audit.completedAt,
-  };
-}
-
-async function getResults(auditId: string, projectId: string) {
-  const { audit, pages, lighthouse, issues } =
-    await AuditRepository.getAuditResultsForProject(auditId, projectId);
-
-  if (!audit) throw new AppError("NOT_FOUND");
-
-  const parsedConfig = parseAuditConfig(audit.config);
-  if (!parsedConfig) {
-    throw new AppError("INTERNAL_ERROR", "Invalid audit configuration");
-  }
-
-  return {
-    audit: {
-      id: audit.id,
-      startUrl: audit.startUrl,
-      status: audit.status,
-      pagesCrawled: audit.pagesCrawled,
-      pagesTotal: audit.pagesTotal,
-      startedAt: audit.startedAt,
-      completedAt: audit.completedAt,
-      config: parsedConfig,
-    },
-    pages,
-    lighthouse,
-    issues,
   };
 }
 
@@ -295,7 +248,7 @@ async function remove(auditId: string, projectId: string) {
     throw new AppError("NOT_FOUND");
   }
 
-  if (audit.status === "running") {
+  if (audit.status === AuditStatus.Running) {
     if (!audit.workflowInstanceId) {
       throw new AppError(
         "CONFLICT",
@@ -338,6 +291,13 @@ async function remove(auditId: string, projectId: string) {
   } catch (error) {
     console.warn(`Failed to destroy audit scratchpad ${auditId}:`, error);
   }
+  // Best-effort: the stored Lighthouse reports. A miss is swept when the
+  // account is erased (account-deletion/storage.ts).
+  try {
+    await deleteR2Prefix(env.R2, `site-audit/${projectId}/${auditId}/`);
+  } catch (error) {
+    console.warn(`Failed to delete audit files ${auditId}:`, error);
+  }
 }
 
 export const AuditService = {
@@ -345,7 +305,6 @@ export const AuditService = {
   startAudit,
   getStatus,
   getCrawlProgress,
-  getResults,
   getHistory,
   remove,
 } as const;

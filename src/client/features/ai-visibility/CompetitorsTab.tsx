@@ -2,7 +2,11 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { getAiVisibilityResults } from "@/serverFunctions/ai-visibility";
-import type { AiEngine, AiTrackerState } from "@/shared/ai-visibility";
+import {
+  aiBrandLabel,
+  type AiEngine,
+  type AiTrackerState,
+} from "@/shared/ai-visibility";
 import { SkeletonTableRows } from "@/client/components/SkeletonPresets";
 import { DataTableToolbar } from "@/client/components/table/DataTableToolbar";
 import { Badge } from "@/client/components/ui/badge";
@@ -24,10 +28,12 @@ export function CompetitorsTab({
   projectId,
   state,
   runId,
+  collecting,
 }: {
   projectId: string;
   state: AiTrackerState;
   runId: string | undefined;
+  collecting: boolean;
 }) {
   const [selectedEngines, setSelectedEngines] = useState<AiEngine[] | null>(
     null,
@@ -81,7 +87,9 @@ export function CompetitorsTab({
         <AiQueryError error={query.error} />
       ) : runId && !rows.length ? (
         <p className="p-10 text-center text-sm text-muted-foreground">
-          No answers match these filters.
+          {collecting
+            ? "Collecting answers. Brands appear here as answers arrive."
+            : "No answers match these filters."}
         </p>
       ) : (
         <Table>
@@ -99,7 +107,7 @@ export function CompetitorsTab({
                 <TableCell>
                   <span className="flex items-center gap-2">
                     <DomainFavicon domain={domain} />
-                    {name}
+                    {aiBrandLabel({ name, domain, own })}
                     {own && (
                       <Badge variant="secondary" className="ml-2">
                         You

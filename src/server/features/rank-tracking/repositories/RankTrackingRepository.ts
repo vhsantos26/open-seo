@@ -21,6 +21,7 @@ import { DB_BATCH_SIZE, executeInBatches } from "@/db/runBatch";
 import type { RankTrackingSkipReason } from "@/shared/rank-tracking";
 import {
   getLatestSnapshotsForKeywords,
+  getBestPositionsForKeywords,
   getSnapshotsBeforeDate,
   getEarliestSnapshotsForKeywords,
   getKeywordHistory,
@@ -30,13 +31,24 @@ import {
 import {
   tryCreateRun,
   updateRun,
-  setRunErrorIfEmpty,
   getRunById,
   getLatestRunForConfig,
   getActiveRunForConfig,
+  getTaskUnitsInFlight,
   insertSnapshots,
+  upsertSnapshots,
+  updateSnapshotUrls,
+  deleteNotFoundSnapshots,
   getSnapshotsForRun,
 } from "./runQueries";
+import {
+  getKeywordsForConfig,
+  getTopKeywordsForProject,
+  addKeywordsToConfig,
+  removeKeywordsFromConfig,
+  setKeywordsPinned,
+  setKeywordsTargetUrl,
+} from "./keywordQueries";
 
 // ---------------------------------------------------------------------------
 // Config CRUD
@@ -75,10 +87,11 @@ async function getConfigById({
   return rows[0] ?? null;
 }
 
-async function getConfigByProjectDomainLocation(
+async function getConfigByProjectDomainMarket(
   projectId: string,
   domain: string,
   locationCode: number,
+  languageCode: string,
   locationName: string | null,
 ) {
   const rows = await db
@@ -89,6 +102,7 @@ async function getConfigByProjectDomainLocation(
         eq(rankTrackingConfigs.projectId, projectId),
         eq(rankTrackingConfigs.domain, domain),
         eq(rankTrackingConfigs.locationCode, locationCode),
+        eq(rankTrackingConfigs.languageCode, languageCode),
         // National (NULL) and per-city configs are distinct rows — mirrors
         // the partial unique indexes, so a national config and any number of
         // city configs can coexist for the same domain.
@@ -206,117 +220,6 @@ async function claimDueConfig(input: {
   return claimed.length > 0;
 }
 
-// ---------------------------------------------------------------------------
-// Tracking keywords per config
-// ---------------------------------------------------------------------------
-
-async function getKeywordsForConfig(configId: string) {
-  return db
-    .select()
-    .from(rankTrackingKeywords)
-    .where(eq(rankTrackingKeywords.configId, configId))
-    .orderBy(rankTrackingKeywords.createdAt);
-}
-
-async function addKeywordsToConfig(
-  keywords: (typeof rankTrackingKeywords.$inferInsert)[],
-) {
-  const insertedIds: string[] = [];
-
-  // Keep each statement below D1's bound-parameter limit and return only rows
-  // that actually won the unique(config_id, keyword) race.
-  const insertBatchSize = 25;
-  for (let i = 0; i < keywords.length; i += insertBatchSize) {
-    const chunk = keywords.slice(i, i + insertBatchSize);
-    const inserted = await db
-      .insert(rankTrackingKeywords)
-      .values(chunk)
-      .onConflictDoNothing()
-      .returning({ id: rankTrackingKeywords.id });
-    insertedIds.push(...inserted.map((row) => row.id));
-  }
-
-  return insertedIds;
-}
-
-async function removeKeywordsFromConfig(
-  keywordIds: string[],
-  configId: string,
-) {
-  if (keywordIds.length === 0) return [];
-
-  const removedIds: string[] = [];
-  // One extra bind is used by configId; keep each IN list below D1's ~100
-  // parameter ceiling while preserving the config ownership predicate.
-  const deleteBatchSize = 90;
-  for (let i = 0; i < keywordIds.length; i += deleteBatchSize) {
-    const chunk = keywordIds.slice(i, i + deleteBatchSize);
-    const removed = await db
-      .delete(rankTrackingKeywords)
-      .where(
-        and(
-          inArray(rankTrackingKeywords.id, chunk),
-          eq(rankTrackingKeywords.configId, configId),
-        ),
-      )
-      .returning({ id: rankTrackingKeywords.id });
-    removedIds.push(...removed.map((row) => row.id));
-  }
-  return removedIds;
-}
-
-async function setKeywordsPinned(
-  keywordIds: string[],
-  configId: string,
-  pinned: boolean,
-) {
-  const pinnedAt = pinned ? new Date().toISOString() : null;
-  const updatedIds: string[] = [];
-  // Same IN-list ceiling as removeKeywordsFromConfig, plus two binds for
-  // configId and pinnedAt.
-  const updateBatchSize = 90;
-  for (let i = 0; i < keywordIds.length; i += updateBatchSize) {
-    const chunk = keywordIds.slice(i, i + updateBatchSize);
-    const updated = await db
-      .update(rankTrackingKeywords)
-      .set({ pinnedAt })
-      .where(
-        and(
-          inArray(rankTrackingKeywords.id, chunk),
-          eq(rankTrackingKeywords.configId, configId),
-        ),
-      )
-      .returning({ id: rankTrackingKeywords.id });
-    updatedIds.push(...updated.map((row) => row.id));
-  }
-  return updatedIds;
-}
-
-async function setKeywordsTargetUrl(
-  keywordIds: string[],
-  configId: string,
-  targetUrl: string | null,
-) {
-  const updatedIds: string[] = [];
-  // Same IN-list ceiling as setKeywordsPinned.
-  const updateBatchSize = 90;
-  for (let i = 0; i < keywordIds.length; i += updateBatchSize) {
-    const chunk = keywordIds.slice(i, i + updateBatchSize);
-    const updated = await db
-      .update(rankTrackingKeywords)
-      .set({ targetUrl })
-      .where(
-        and(
-          inArray(rankTrackingKeywords.id, chunk),
-          eq(rankTrackingKeywords.configId, configId),
-        ),
-      )
-      .returning({ id: rankTrackingKeywords.id });
-    updatedIds.push(...updated.map((row) => row.id));
-  }
-  return updatedIds;
-}
-
 async function getConfigSummaries(projectId: string) {
   const configs = await getConfigsForProject(projectId);
   if (configs.length === 0) return [];
@@ -339,12 +242,12 @@ async function getConfigSummaries(projectId: string) {
     .groupBy(rankCheckRuns.configId)
     .as("latestStarted");
 
-  // Join back to get status + completedAt for each config's latest run
+  // Join back to get completedAt + errorMessage for each config's latest run
   const latestRuns = await db
     .select({
       configId: rankCheckRuns.configId,
-      status: rankCheckRuns.status,
       completedAt: rankCheckRuns.completedAt,
+      errorMessage: rankCheckRuns.errorMessage,
     })
     .from(rankCheckRuns)
     .innerJoin(
@@ -357,20 +260,21 @@ async function getConfigSummaries(projectId: string) {
 
   const latestRunMap = new Map<
     string,
-    { status: string; completedAt: string | null }
+    { completedAt: string | null; errorMessage: string | null }
   >();
   for (const run of latestRuns) {
     latestRunMap.set(run.configId, {
-      status: run.status,
       completedAt: run.completedAt,
+      errorMessage: run.errorMessage,
     });
   }
 
   return configs.map((config) => ({
     ...config,
     keywordCount: kwCountMap.get(config.id) ?? 0,
-    lastRunStatus: latestRunMap.get(config.id)?.status ?? null,
     lastRunCompletedAt: latestRunMap.get(config.id)?.completedAt ?? null,
+    // A finished run only has an error message when it failed or was partial.
+    lastRunIncomplete: Boolean(latestRunMap.get(config.id)?.errorMessage),
   }));
 }
 
@@ -415,20 +319,24 @@ async function getKeywordCountsForConfigs(configIds: string[]) {
 export const RankTrackingRepository = {
   getConfigsForProject,
   getConfigById,
-  getConfigByProjectDomainLocation,
+  getConfigByProjectDomainMarket,
   createConfig,
   updateConfig,
   getDueConfigsWithOrganization,
   claimDueConfig,
   tryCreateRun,
   updateRun,
-  setRunErrorIfEmpty,
   getRunById,
   getLatestRunForConfig,
   getActiveRunForConfig,
+  getTaskUnitsInFlight,
   insertSnapshots,
+  upsertSnapshots,
+  updateSnapshotUrls,
+  deleteNotFoundSnapshots,
   getSnapshotsForRun,
   getKeywordsForConfig,
+  getTopKeywordsForProject,
   addKeywordsToConfig,
   removeKeywordsFromConfig,
   setKeywordsPinned,
@@ -437,6 +345,7 @@ export const RankTrackingRepository = {
   getKeywordCountsForConfigs,
   getConfigSummaries,
   getLatestSnapshotsForKeywords,
+  getBestPositionsForKeywords,
   getSnapshotsBeforeDate,
   getEarliestSnapshotsForKeywords,
   getKeywordHistory,

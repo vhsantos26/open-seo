@@ -72,7 +72,6 @@ export function BenchmarkCard({ projectId }: { projectId: string }) {
   return (
     <CardShell
       title="Competitors"
-      stamp="Organic traffic and keywords are DataForSEO estimates, not measurements."
       action={
         <Button
           variant="outline"
@@ -91,49 +90,55 @@ export function BenchmarkCard({ projectId }: { projectId: string }) {
           over time.
         </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Domain</TableHead>
-              <TableHead className="text-right">Est. traffic / mo</TableHead>
-              <TableHead className="text-right">Keywords</TableHead>
-              <TableHead className="text-right">As of</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((row) => (
-              <TableRow key={row.domain}>
-                <TableCell>
-                  {row.name ?? row.domain}
-                  {row.isOwn ? (
-                    <Badge variant="soft" className="ml-2">
-                      You
-                    </Badge>
-                  ) : null}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {row.latest?.organicTraffic == null
-                    ? "—"
-                    : formatCount(row.latest.organicTraffic)}
-                  <TrafficChange
-                    latest={row.latest?.organicTraffic ?? null}
-                    previous={row.previous?.organicTraffic ?? null}
-                  />
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {row.latest?.organicKeywords == null
-                    ? "—"
-                    : formatCount(row.latest.organicKeywords)}
-                </TableCell>
-                <TableCell className="text-right text-muted-foreground">
-                  {row.latest
-                    ? formatShortDate(row.latest.capturedAt)
-                    : "never"}
-                </TableCell>
+        <>
+          <p className="pb-3 text-xs text-muted-foreground">
+            Organic traffic and keywords are DataForSEO estimates, not
+            measurements.
+          </p>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Domain</TableHead>
+                <TableHead className="text-right">Est. traffic / mo</TableHead>
+                <TableHead className="text-right">Keywords</TableHead>
+                <TableHead className="text-right">As of</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.domain}>
+                  <TableCell>
+                    {row.name ?? row.domain}
+                    {row.isOwn ? (
+                      <Badge variant="soft" className="ml-2">
+                        You
+                      </Badge>
+                    ) : null}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {row.latest?.organicTraffic == null
+                      ? "—"
+                      : formatCount(row.latest.organicTraffic)}
+                    <TrafficChange
+                      latest={row.latest?.organicTraffic ?? null}
+                      previous={row.previous?.organicTraffic ?? null}
+                    />
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {row.latest?.organicKeywords == null
+                      ? "—"
+                      : formatCount(row.latest.organicKeywords)}
+                  </TableCell>
+                  <TableCell className="text-right text-muted-foreground">
+                    {row.latest
+                      ? formatShortDate(row.latest.capturedAt)
+                      : "never"}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </>
       )}
       {confirming ? (
         <ConfirmDialog

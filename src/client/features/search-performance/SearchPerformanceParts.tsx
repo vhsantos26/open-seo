@@ -13,13 +13,9 @@ import {
 } from "@/client/components/table/TableBulkActionBar";
 import { TablePagination } from "@/client/components/table/TablePagination";
 import { Button } from "@/client/components/ui/button";
-import { Card } from "@/client/components/ui/card";
 import {
   buildDimensionColumns,
   buildStrikingColumns,
-  formatCount,
-  formatCtr,
-  formatPosition,
   type Report,
   type SearchPerformanceTableRow,
 } from "@/client/features/search-performance/SearchPerformanceColumns";
@@ -31,6 +27,7 @@ import {
   type SearchPerformanceTableDimension,
 } from "@/types/schemas/search-performance";
 import { saveKeywords } from "@/serverFunctions/keywords";
+import { TrackRankingsMenu } from "./TrackRankingsMenu";
 
 export type ExportTarget = "csv" | "sheets";
 
@@ -51,10 +48,13 @@ function strikingExportTable(report: Report): ExportTable {
   };
 }
 
+type ExportRow = Omit<SearchPerformanceTableRow, "prevClicks">;
+
 function dimensionExportTable(
   dimension: SearchPerformanceTableDimension,
-  rows: SearchPerformanceTableRow[],
+  rows: ExportRow[],
   stamp: string,
+  showPosition: boolean,
 ): ExportTable {
   const isPage = dimension === "page";
   return {
@@ -63,15 +63,17 @@ function dimensionExportTable(
       isPage ? "Page" : "Query",
       "Clicks",
       "Impressions",
-      "CTR",
-      "Position",
+      "CTR (%)",
+      ...(showPosition ? ["Position"] : []),
     ],
     rows: rows.map((row) => [
       row.key,
       row.clicks,
       row.impressions,
-      row.ctr,
-      row.position,
+      // CTR is a 0-1 ratio; exports keep two decimals, which would turn 0.0234
+      // into 0.02. As a percentage the same precision reads 2.34.
+      Math.round(row.ctr * 10_000) / 100,
+      ...(showPosition ? [row.position] : []),
     ]),
   };
 }
@@ -95,122 +97,56 @@ export function exportStriking(
  *  page) so pagination never truncates a download. */
 export function exportDimensionRows(
   dimension: SearchPerformanceTableDimension,
-  rows: SearchPerformanceTableRow[],
+  rows: ExportRow[],
   range: Report["range"],
   target: ExportTarget,
+  showPosition: boolean,
 ): Promise<void> {
   const stamp = `${range.startDate}-to-${range.endDate}`;
-  return runExport(dimensionExportTable(dimension, rows, stamp), target);
-}
-
-type Delta = { text: string; improved: boolean } | null;
-
-function percentDelta(current: number, previous: number): Delta {
-  if (previous <= 0) return null;
-  const change = (current - previous) / previous;
-  const pct = (change * 100).toFixed(1);
-  return { text: `${change >= 0 ? "+" : ""}${pct}%`, improved: change >= 0 };
-}
-
-/** Position falls as rankings improve, so the delta is inverted. */
-function positionDelta(current: number, previous: number): Delta {
-  if (previous <= 0 || current <= 0) return null;
-  const change = previous - current;
-  return {
-    text: `${change >= 0 ? "+" : ""}${change.toFixed(1)}`,
-    improved: change >= 0,
-  };
-}
-
-export function TotalsCards({ report }: { report: Report }) {
-  const { totals, prevTotals, range } = report;
-  const deltaTitle = `vs ${range.prevStartDate} to ${range.prevEndDate}`;
-  return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <TotalCard
-        label="Clicks"
-        value={formatCount(totals.clicks)}
-        delta={percentDelta(totals.clicks, prevTotals.clicks)}
-        deltaTitle={deltaTitle}
-      />
-      <TotalCard
-        label="Impressions"
-        value={formatCount(totals.impressions)}
-        delta={percentDelta(totals.impressions, prevTotals.impressions)}
-        deltaTitle={deltaTitle}
-      />
-      <TotalCard
-        label="CTR"
-        value={formatCtr(totals.ctr)}
-        delta={percentDelta(totals.ctr, prevTotals.ctr)}
-        deltaTitle={deltaTitle}
-      />
-      <TotalCard
-        label="Avg position"
-        value={formatPosition(totals.position)}
-        delta={positionDelta(totals.position, prevTotals.position)}
-        deltaTitle={deltaTitle}
-      />
-    </div>
-  );
-}
-
-function TotalCard({
-  label,
-  value,
-  delta,
-  deltaTitle,
-}: {
-  label: string;
-  value: string;
-  delta: Delta;
-  deltaTitle: string;
-}) {
-  return (
-    <Card className="gap-0 p-4">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div className="mt-1 flex items-baseline gap-2">
-        <span className="text-2xl font-semibold">{value}</span>
-        {delta ? (
-          <span
-            className={`text-xs ${delta.improved ? "text-success" : "text-destructive"}`}
-            title={deltaTitle}
-          >
-            {delta.text}
-          </span>
-        ) : null}
-      </div>
-    </Card>
+  return runExport(
+    dimensionExportTable(dimension, rows, stamp, showPosition),
+    target,
   );
 }
 
 export function DimensionTable({
   rows,
   keyLabel,
+  showPosition,
   isFiltered,
   isPastEnd,
   onClearFilters,
   onFirstPage,
+  selectedKey,
+  onSelect,
 }: {
   rows: SearchPerformanceTableRow[];
   keyLabel: string;
+  showPosition: boolean;
   isFiltered: boolean;
   isPastEnd: boolean;
   onClearFilters: () => void;
   onFirstPage: () => void;
+  /** The row whose details are open. */
+  selectedKey: string | null;
+  onSelect: (key: string) => void;
 }) {
-  const columns = useMemo(() => buildDimensionColumns(keyLabel), [keyLabel]);
+  const columns = useMemo(
+    () => buildDimensionColumns(keyLabel, showPosition),
+    [keyLabel, showPosition],
+  );
   const table = useDataTable({
     data: rows,
     columns,
     withSorting: true,
+    getRowId: (row) => row.key,
     initialState: { sorting: [{ id: "clicks", desc: true }] },
   });
   return (
     <DataTable
       table={table}
+      onRowClick={(row) => onSelect(row.original.key)}
+      activeRowId={selectedKey ?? undefined}
       isFiltered={isFiltered && !isPastEnd}
       onClearFilters={onClearFilters}
       empty={
@@ -233,6 +169,31 @@ export function DimensionTable({
   );
 }
 
+/** Saves Search Console queries to the project's saved keywords. */
+export function useSaveQueriesAsKeywords(
+  projectId: string,
+  onSaved?: () => void,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (keywords: string[]) =>
+      saveKeywords({ data: { projectId, keywords } }),
+    onSuccess: (_result, keywords) => {
+      captureClientEvent("keyword:save", {
+        source_feature: "search_performance",
+        keyword_count: keywords.length,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["savedKeywords", projectId],
+      });
+      toast.success(
+        `Saved ${keywords.length} ${keywords.length === 1 ? "keyword" : "keywords"}`,
+      );
+      onSaved?.();
+    },
+  });
+}
+
 export function StrikingDistanceTable({
   projectId,
   rows,
@@ -252,7 +213,6 @@ export function StrikingDistanceTable({
   isFiltered: boolean;
   onClearFilters: () => void;
 }) {
-  const queryClient = useQueryClient();
   const anchorRef = useSelectionAnchor();
   const [rowSelection, setRowSelection] = useState({});
   const columns = useMemo(() => buildStrikingColumns(anchorRef), [anchorRef]);
@@ -292,23 +252,7 @@ export function StrikingDistanceTable({
     }
   };
 
-  const save = useMutation({
-    mutationFn: (keywords: string[]) =>
-      saveKeywords({ data: { projectId, keywords } }),
-    onSuccess: (_result, keywords) => {
-      captureClientEvent("keyword:save", {
-        source_feature: "search_performance",
-        keyword_count: keywords.length,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["savedKeywords", projectId],
-      });
-      toast.success(
-        `Saved ${keywords.length} ${keywords.length === 1 ? "keyword" : "keywords"}`,
-      );
-      setRowSelection({});
-    },
-  });
+  const save = useSaveQueriesAsKeywords(projectId, () => setRowSelection({}));
 
   return (
     <>
@@ -381,6 +325,11 @@ export function StrikingDistanceTable({
             >
               Save as keywords
             </TableBulkActionButton>
+            <TrackRankingsMenu
+              projectId={projectId}
+              queries={selectedQueries}
+              onAdded={() => setRowSelection({})}
+            />
           </div>
         }
       />

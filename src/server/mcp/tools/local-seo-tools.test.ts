@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   fetchBusinessListingsCategories: vi.fn(),
   fetchLocalSerpTaskResult: vi.fn(),
   getProjectForOrganization: vi.fn(),
+  getDistanceUnit: vi.fn(),
   localTaskPost:
     vi.fn<
       (input: {
@@ -40,6 +41,7 @@ vi.mock("@/server/lib/r2-cache", () => ({
   buildCacheKey: async (prefix: string, params: Record<string, unknown>) =>
     `${prefix}:${JSON.stringify(params)}`,
   getCached: mocks.getCached,
+  getCachedStrict: mocks.getCached,
   setCached: mocks.setCached,
 }));
 
@@ -47,6 +49,10 @@ vi.mock("@/server/features/projects/services/ProjectService", () => ({
   ProjectService: {
     getProjectForOrganization: mocks.getProjectForOrganization,
   },
+}));
+
+vi.mock("@/server/auth/repositories/AuthRepository", () => ({
+  AuthRepository: { getDistanceUnit: mocks.getDistanceUnit },
 }));
 
 const toolContext = makeToolContext();
@@ -59,6 +65,7 @@ beforeEach(() => {
   });
   mocks.getCached.mockResolvedValue(null);
   mocks.setCached.mockResolvedValue(undefined);
+  mocks.getDistanceUnit.mockResolvedValue(null);
 });
 
 describe("get_business_profile", () => {
@@ -223,9 +230,12 @@ describe("get_business_reviews", () => {
       taskId: "extended:task-9",
     });
     const out = textContent(result);
-    expect(out).toContain("# | when | rating | author | source | review");
+    expect(out).toContain(
+      "# | when | rating | author | source | review | owner reply",
+    );
     expect(out).toContain("Rare bottles and great staff.");
-    expect(out).toContain("| yes");
+    // The owner's own words, not a yes/no — answering reviews reads them.
+    expect(out).toContain("| Thanks!");
 
     await expect(
       getBusinessReviewsTool.handler(
@@ -324,7 +334,27 @@ describe("get_local_rank_grid", () => {
       },
       matchedBusiness: { title: "Acme Cafe", cid: "123", placeId: "p1" },
     });
-    expect(textContent(result)).toContain(" 2  2  2");
+    const out = textContent(result);
+    expect(out).toContain(" 2  2  2");
+    expect(out).toContain(
+      "Matched business: Acme Cafe (cid 123, place_id p1).",
+    );
+  });
+
+  it("writes distances in miles for a US project when the user has no saved unit", async () => {
+    const result = await getLocalRankGridTool.handler(gridArgs, toolContext);
+
+    expect(result.structuredContent).toMatchObject({ distanceUnit: "mi" });
+    expect(textContent(result)).toContain("1.2 mi between points");
+  });
+
+  it("writes distances in the user's saved unit over the project's market", async () => {
+    mocks.getDistanceUnit.mockResolvedValue("km");
+
+    const result = await getLocalRankGridTool.handler(gridArgs, toolContext);
+
+    expect(result.structuredContent).toMatchObject({ distanceUnit: "km" });
+    expect(textContent(result)).toContain("2 km between points");
   });
 
   it("records each point's result count and top business so nulls are interpretable", async () => {
@@ -341,6 +371,15 @@ describe("get_local_rank_grid", () => {
         topResult: { title: "Other Cafe", cid: "999" },
       }),
     );
+    // A text-only client reads the same context: the ASCII grid alone can't
+    // tell "outranked" from "nobody ranked here".
+    const out = textContent(result);
+    expect(out).toContain(
+      "row | col | lat | lon | rank | results | top result",
+    );
+    expect(out).toContain(
+      "0 | 0 | 40.0180874 | -74.0234532 | — | 1 | Other Cafe | 999",
+    );
   });
 
   it("falls back to a case-insensitive title match", async () => {
@@ -353,6 +392,21 @@ describe("get_local_rank_grid", () => {
 
     expect(result.structuredContent).toMatchObject({
       summary: { pointsFound: 9, averageRank: 4 },
+    });
+  });
+
+  it("never matches by name when a cid is given", async () => {
+    // A similarly named business must not count as the target's rank.
+    completeTasks([{ rank_absolute: 1, title: "Acme Cafe", cid: "999" }]);
+
+    const result = await getLocalRankGridTool.handler(
+      { ...gridArgs, target: { cid: "123", name: "acme cafe" } },
+      toolContext,
+    );
+
+    expect(result.structuredContent).toMatchObject({
+      summary: { pointsFound: 0 },
+      matchedBusiness: null,
     });
   });
 

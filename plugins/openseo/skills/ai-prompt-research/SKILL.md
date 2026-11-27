@@ -17,13 +17,13 @@ The project-context tools are free and shared with the app and other agents.
 
 1. External MCP clients: resolve the project with `list_projects`, ask only if the match is ambiguous, then call `get_project_context`. In SAM, use the current project and context already injected into the conversation; SAM has no `get_project_context` tool and needs no project selection or connection setup.
 2. This workflow needs a brand, its website and a rough idea of what it sells. Reuse `business_overview`, audience, competitors and key pages. If `business_overview` is empty, infer it from the site, confirm it in one question, and save it with `update_project_context`.
-3. Read `get_ai_visibility_tracker` to learn the saved topics and prompts. Prompts already tracked are marked `tracked` in research results; do not present them as new ideas. `brandMentioned` matches the tracker's own brand, whose name is the project name; if the project is not named as people write the brand, treat brand mentions as unknown and say so.
+3. Read `get_ai_visibility_tracker` to learn the saved topics and prompts. Prompts already tracked are marked `tracked` in research results; do not present them as new ideas. `brandMentioned` matches the tracker's own brand, the `brands` row with `own: true`; if that name is not how people write the brand, treat brand mentions as unknown and say so.
 4. Check the research log for prompt research under 30 days old on the same keywords. Reuse it instead of paying again unless the user asks for fresh data.
 5. On finish, append one line with `update_project_context`: `{ updates: [{ appendResearchLog: { summary: "AI prompt research: <keywords>. Verdict: <conclusion>" } }] }`.
 
 ## OpenSEO MCP tools
 
-- `research_ai_visibility_prompts`: questions about one keyword, matched in questions and answers and kept only when they ask the keyword phrase or cite sites that rank on Google for it or belong to the project or its competitors, with near-duplicates merged and the most common first. Each prompt has cited `sources` (with `own` marked), `ownDomainCited`, `brandMentioned` and `tracked`. One prompt search and one Google results lookup per keyword, cached for 24 hours. US English only. Requires a paid plan in hosted mode.
+- `research_ai_visibility_prompts`: questions about one keyword, matched in questions and answers and kept only when a model judges they use the keyword in the business's sense (from the project's business overview), with near-duplicates merged and the most common first. Niche keywords may return few prompts. Each prompt has cited `sources` (with `own` marked), `ownDomainCited`, `brandMentioned` and `tracked`. One prompt search and one relevance check per keyword, cached for 24 hours. US English only. Requires a paid plan in hosted mode.
 - `explore_prompt`: optional. Asks ChatGPT one prompt through its API and returns today's answer, citations, a `brandMentioned` flag for `highlightBrand`, and `fanOutQueries`, the web searches the model ran before answering. Charged at actual usage per uncached answer; cached answers are free for seven days. Requires a paid plan in hosted mode.
 - `list_saved_keywords` and, when connected, a bounded `get_search_console_performance` read: free sources of head terms the business already cares about.
 
@@ -76,12 +76,15 @@ Pick 10–20 neutral prompts across the openings and the groups where the brand 
 
 ## What to return
 
-Deliver through the `seo-report` skill, saving with `skill: "ai-prompt-research"` and a title like "AI Prompt Research — Oct 2, 2026". If that skill is unavailable, return the same content in chat. Sections, in order:
+Deliver through the `seo-report` skill, saving with `skill: "ai-prompt-research"` and a title like "AI prompt research: meeting notes software", naming the market or the keywords researched. If that skill is unavailable, return the same content in chat. Use its report shape: the verdict, "What to do", the moves, then the data. For prompt research:
 
-1. **What people ask about your market**: three bullets. The biggest prompt group, the strongest opening, and where the brand already shows up.
-2. **Openings**: one `h3` per leading opening with representative prompts, the brand's presence, and the cited domains with their source type.
-3. **All prompt groups**: one table. Group | Example prompt | Prompts | Your site cited | Brand mentioned | Most-cited domains.
-4. **Prompts worth tracking**: the 10–20 exact prompts, grouped, ready to add with **Track selected** in the app.
+1. **Verdict**: the strongest opening in one sentence: what people ask, and who the answers cite instead of the brand.
+2. **The moves**: one per leading opening, two at most, then a last move to track the prompts.
+   - **Facts**: how many prompts the group holds, how many mention or cite the brand, and the kind of source cited most.
+   - **Do this**: where to show up, naming the domains and pages. These are proposals; say so once. For the tracking move: open Prompt Research in the app and add the listed prompts with **Track selected**.
+   - **Why**: the observations. Representative prompts, the brand's presence, the cited domains with their source type.
+3. **Prompts worth tracking**: the 10–20 exact prompts, grouped, ready to add.
+4. **All prompt groups**: one table. Group | Example prompt | Prompts | Brand cited or mentioned | Most-cited domains. The openings are the `pick` rows.
 5. **How this report was made**: the fixed skill link line from `seo-report` (URL `https://openseo.so/docs/skills/ai-prompt-research`, text "OpenSEO AI Prompt Research skill"), the keywords researched, the market (US English), the research date, any prompt checked with `explore_prompt`, and a note that the questions and answers come from DataForSEO's dataset, built mostly from Google "People also ask" questions, not logged ChatGPT prompts or OpenSEO's own collected answers.
 
 In chat, lead with one shareable line built from the evidence, for example: "ChatGPT's answers about AI meeting notes cite G2 and two Reddit threads, not your site." Then the report link.

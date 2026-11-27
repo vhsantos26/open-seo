@@ -5,6 +5,7 @@ import { Ga4MeasurementHealthService } from "@/server/features/ga4/services/Ga4M
 import { OVERVIEW_METRICS } from "@/server/features/ga4/services/Ga4ReportDefinitions";
 import { Ga4OrganicOverviewService } from "@/server/features/ga4/services/Ga4OrganicOverviewService";
 import {
+  GSC_API_DISABLED_MESSAGE,
   GscApiError,
   GscNotConnectedError,
   GscTokenError,
@@ -21,7 +22,15 @@ import { mcpResponse } from "@/server/mcp/formatters";
 import { looseObjectOutputSchema } from "@/server/mcp/output-schemas";
 import { withMcpProjectAuth } from "@/server/mcp/project-auth";
 import { projectIdSchema } from "@/server/mcp/schemas";
-import { formatMcpTable, type McpTableColumn } from "@/server/mcp/table";
+import {
+  formatMcpCell,
+  formatMcpTable,
+  percentCell,
+  positionCell,
+  readPath,
+  truncatedCell,
+  type McpTableColumn,
+} from "@/server/mcp/table";
 import { buildDashboardUrl } from "@/server/mcp/urls";
 
 const dateSchema = z
@@ -190,6 +199,9 @@ function errorResponse(
   } else if (error instanceof GscNotConnectedError) {
     code = "gsc_not_connected";
     message = "Search Console is not connected for this project.";
+  } else if (error instanceof GscApiError && error.apiDisabled) {
+    code = "gsc_api_disabled";
+    message = GSC_API_DISABLED_MESSAGE;
   } else if (
     error instanceof GscTokenError ||
     (error instanceof GscApiError && [401, 403].includes(error.status))
@@ -219,9 +231,96 @@ function errorResponse(
 }
 
 type Ga4ReportRow = Ga4ReportResult["rows"][number];
+type Ga4ComparisonRow = NonNullable<
+  Ga4ReportResult["comparison"]
+>["rows"][number];
 type Ga4OverviewResult = Awaited<
   ReturnType<typeof Ga4OrganicOverviewService.getOrganicOverview>
 >;
+type Ga4TrendRow = Ga4OverviewResult["trend"][number];
+type Ga4MeasurementHealthResult = Awaited<
+  ReturnType<typeof Ga4MeasurementHealthService.getMeasurementHealth>
+>;
+type SearchOpportunityResult = Awaited<
+  ReturnType<typeof SearchOpportunityService.getOpportunities>
+>;
+type SearchOpportunityRow = SearchOpportunityResult["rows"][number];
+
+// Comparison rows come from a complete (unpaginated) report, so cap what the
+// text block renders. Rows arrive in current-report order, which GA4 sorts by
+// the report's order metric, so the first rows are the largest ones.
+const COMPARISON_ROW_LIMIT = 50;
+
+/** Leading newline so callers can concatenate sections directly. */
+function section<T>(
+  label: string,
+  rows: readonly T[],
+  columns: readonly McpTableColumn<T>[],
+): string {
+  if (rows.length === 0) return "";
+  return `\n${label}:\n${formatMcpTable(rows, columns)}`;
+}
+
+// Diagnostics are built per report kind, so their element type is a union of
+// record shapes; read the shared fields by path.
+function diagnosticsSection(diagnostics: readonly unknown[]): string {
+  return section("Diagnostics", diagnostics, [
+    { header: "severity", value: (row) => readPath(row, "severity") },
+    { header: "code", value: (row) => readPath(row, "code") },
+    { header: "message", value: (row) => readPath(row, "message") },
+    {
+      header: "evidence",
+      value: (row) => readPath(row, "evidence"),
+      format: truncatedCell(160),
+    },
+  ]);
+}
+
+function deltaCell(value: unknown): string {
+  const current = formatMcpCell(readPath(value, "current"));
+  const previous = formatMcpCell(readPath(value, "previous"));
+  const percent = readPath(value, "percentChange");
+  const change =
+    typeof percent === "number" && Number.isFinite(percent)
+      ? ` (${percent > 0 ? "+" : ""}${percentCell(percent)})`
+      : "";
+  return `${current} vs ${previous}${change}`;
+}
+
+function comparisonSection(comparison: Ga4ReportResult["comparison"]): string {
+  if (!comparison) return "";
+  // A requested comparison that came back empty must still be distinguishable
+  // from one that was never requested.
+  if (comparison.rows.length === 0) {
+    return "\nPrevious-period comparison returned no rows.";
+  }
+  const rows = comparison.rows.slice(0, COMPARISON_ROW_LIMIT);
+  const truncated =
+    comparison.rows.length > rows.length
+      ? `, top ${rows.length} of ${comparison.rows.length} rows`
+      : "";
+  const range = comparison.previousDateRange;
+  const columns: McpTableColumn<Ga4ComparisonRow>[] = [
+    ...comparison.dimensions.map(
+      (dimension): McpTableColumn<Ga4ComparisonRow> => ({
+        header: dimension,
+        value: (row) => row.dimensions[dimension],
+      }),
+    ),
+    ...comparison.metrics.map(
+      (metric): McpTableColumn<Ga4ComparisonRow> => ({
+        header: metric,
+        value: (row) => row.metrics[metric],
+        format: deltaCell,
+      }),
+    ),
+  ];
+  return section(
+    `Compared with ${range.startDate} through ${range.endDate} (current vs previous${truncated})`,
+    rows,
+    columns,
+  );
+}
 
 // These four MCP tools accept channel=all. landing_pages is Organic Search
 // only and has no channel argument.
@@ -268,22 +367,39 @@ function endDateClampNote(result: {
 
 function reportText(label: string, result: Ga4ReportResult) {
   const range = result.request.resolvedDateRange;
-  const comparison = result.comparison
-    ? ` Previous-period comparison returned ${result.comparison.rows.length} row(s).`
-    : "";
-  const diagnostics =
-    result.diagnostics.length > 0
-      ? ` ${result.diagnostics.length} diagnostic finding(s) are included.`
-      : "";
   const limited = result.reportMetadata.hasLimitedData
     ? " Google marked this report as limited; inspect reportMetadata."
     : "";
   const paginate = result.pageInfo.hasMore
     ? " More rows are available; call again with offset to page through them."
     : "";
-  const summary = `${label}: ${result.rowCount} of ${result.totalRowCount} rows for ${range.startDate} through ${range.endDate}.${endDateClampNote(result)}${comparison}${diagnostics}${limited}${emptyOrganicHint(result)}${paginate}`;
-  if (result.rows.length === 0) return summary;
-  return `${summary}\n${formatMcpTable(result.rows, reportTableColumns(result))}`;
+  const summary = `${label}: ${result.rowCount} of ${result.totalRowCount} rows for ${range.startDate} through ${range.endDate}.${endDateClampNote(result)}${limited}${emptyOrganicHint(result)}${paginate}`;
+  const rows =
+    result.rows.length === 0
+      ? ""
+      : `\n${formatMcpTable(result.rows, reportTableColumns(result))}`;
+  // Rows stay adjacent to the summary line that counts them; the labelled
+  // sections follow so neither table can be mistaken for the other.
+  return `${summary}${rows}${diagnosticsSection(result.diagnostics)}${comparisonSection(result.comparison)}`;
+}
+
+function trendSection(result: Ga4OverviewResult): string {
+  const weekly = result.request.trend === "weekly";
+  const dimension = weekly ? "yearWeek" : "date";
+  const columns: McpTableColumn<Ga4TrendRow>[] = [
+    { header: dimension, value: (row) => row[dimension] },
+    ...OVERVIEW_METRICS.map(
+      (metric): McpTableColumn<Ga4TrendRow> => ({
+        header: metric,
+        value: (row) => row[metric],
+      }),
+    ),
+  ];
+  return section(
+    weekly ? "Weekly trend" : "Daily trend",
+    result.trend,
+    columns,
+  );
 }
 
 function overviewText(result: Ga4OverviewResult) {
@@ -301,11 +417,91 @@ function overviewText(result: Ga4OverviewResult) {
     current: result.current[metric] ?? null,
     previous: result.previous?.[metric] ?? null,
   }));
-  return `${summary}\n${formatMcpTable(rows, [
+  const totals = formatMcpTable(rows, [
     { header: "metric", value: (row) => row.metric },
     { header: "current", value: (row) => row.current },
     { header: "previous", value: (row) => row.previous },
-  ])}`;
+  ]);
+  const sessions = result.current.sessions;
+  const previousSessions = result.previous?.sessions;
+  const sessionDrop =
+    typeof sessions === "number" &&
+    typeof previousSessions === "number" &&
+    previousSessions > 0
+      ? (previousSessions - sessions) / previousSessions
+      : 0;
+  const dropHint =
+    sessionDrop >= 0.2
+      ? `\nOrganic sessions fell ${Math.round(sessionDrop * 100)}% from the previous period. Call get_google_analytics_organic_landing_pages with each period's startDate and endDate to find the pages that lost them.`
+      : "";
+  return `${summary}\n${totals}${dropHint}${diagnosticsSection(result.diagnostics)}${trendSection(result)}`;
+}
+
+const OPPORTUNITY_COLUMNS: McpTableColumn<SearchOpportunityRow>[] = [
+  { header: "score", value: (row) => row.score },
+  { header: "page", value: (row) => row.page },
+  { header: "position", value: (row) => row.position, format: positionCell },
+  { header: "impressions", value: (row) => row.impressions },
+  { header: "clicks", value: (row) => row.clicks },
+  { header: "CTR", value: (row) => row.ctr, format: percentCell },
+  { header: "sessions", value: (row) => row.ga4?.sessions },
+  { header: "keyEvents", value: (row) => row.ga4?.keyEvents },
+  { header: "engagementRate", value: (row) => row.ga4?.engagementRate },
+  { header: "match", value: (row) => row.joinStatus },
+];
+
+function opportunityText(result: SearchOpportunityResult) {
+  const range = result.request.dateRange;
+  const emptyGa4 = result.warnings.includes("ga4_no_organic_landing_pages")
+    ? ` GA4 recorded no organic landing pages from ${range.startDate} through ${range.endDate}, so nothing could be matched or scored. If the property started collecting data recently, this window may end before its first day of data; pass startDate and endDate inside the days GA4 has data for. The default window ends three days ago to let Search Console data settle.`
+    : "";
+  const summary = `Search opportunities for ${range.startDate} through ${range.endDate}: ${result.rowCount} returned from ${result.totalCandidateRows} candidates. ${result.coverage.matchedRows} candidates matched GA4 landing pages.${emptyGa4}`;
+  if (result.rows.length === 0) return summary;
+  return `${summary}\n${formatMcpTable(result.rows, OPPORTUNITY_COLUMNS)}`;
+}
+
+function measurementHealthText(result: Ga4MeasurementHealthResult) {
+  const summary = `Measurement health: ${result.summary.webStreamCount} web stream(s), ${result.summary.keyEventCount} key event(s), and ${result.summary.issueCount} diagnostic issue(s).`;
+  const issues =
+    result.issues.length > 0 ? ` Issues: ${result.issues.join(", ")}.` : "";
+  return [
+    `${summary}${issues}`,
+    section("Web streams", result.webStreams, [
+      { header: "streamId", value: (row) => row.streamId },
+      { header: "displayName", value: (row) => row.displayName },
+      { header: "measurementId", value: (row) => row.measurementId },
+      { header: "defaultUri", value: (row) => row.defaultUri },
+      {
+        header: "enhancedMeasurement",
+        value: (row) => row.enhancedMeasurement.streamEnabled,
+      },
+      {
+        header: "siteSearch",
+        value: (row) => row.enhancedMeasurement.siteSearchEnabled,
+      },
+    ]),
+    section("Other streams", result.otherStreams, [
+      { header: "streamId", value: (row) => row.streamId },
+      { header: "type", value: (row) => row.type },
+      { header: "displayName", value: (row) => row.displayName },
+    ]),
+    section("Key events", result.keyEvents, [
+      { header: "eventName", value: (row) => row.eventName },
+      { header: "countingMethod", value: (row) => row.countingMethod },
+      { header: "custom", value: (row) => row.custom ?? false },
+    ]),
+    section("Custom dimensions", result.customDefinitions.dimensions, [
+      { header: "parameterName", value: (row) => row.parameterName },
+      { header: "displayName", value: (row) => row.displayName },
+      { header: "scope", value: (row) => row.scope },
+    ]),
+    section("Custom metrics", result.customDefinitions.metrics, [
+      { header: "parameterName", value: (row) => row.parameterName },
+      { header: "displayName", value: (row) => row.displayName },
+      { header: "scope", value: (row) => row.scope },
+      { header: "measurementUnit", value: (row) => row.measurementUnit },
+    ]),
+  ].join("");
 }
 
 function createAnalyticsReportHandler<TArgs extends ProjectArgs>(
@@ -334,7 +530,7 @@ export const getGoogleAnalyticsOrganicLandingPagesTool = {
   config: {
     title: "Get Google Analytics organic landing pages",
     description:
-      "Read organic-search landing page sessions, engagement, key events, transactions, and revenue from the project's connected GA4 property. Defaults to the last 28 complete property days. Reads only the GA4 property already connected to an OpenSEO project the caller is authorized to access. The server selects the Google account and property from that project's saved connection. Read-only and uses no OpenSEO credits.",
+      "Get the landing pages that receive organic search traffic, with each page's sessions, engagement, key events, transactions, and revenue. Defaults to the last 28 complete property days. Reads only the project's connected GA4 property. Uses no credits. For page views on any channel, use get_google_analytics_page_performance; for these pages joined with Search Console rankings, use get_search_opportunities.",
     inputSchema: landingPageInputSchema,
     outputSchema: reportOutputSchema,
     annotations: {
@@ -368,7 +564,7 @@ export const getGoogleAnalyticsPagePerformanceTool = {
   config: {
     title: "Get Google Analytics page performance",
     description:
-      "Read page views, users, engagement duration, and key events from the connected GA4 property. Organic Search is the default; set channel to all to include every channel. Reads only the GA4 property already connected to an OpenSEO project the caller is authorized to access. The server selects the Google account and property from that project's saved connection. Read-only and uses no OpenSEO credits.",
+      "Get page views, users, engagement duration, and key events for each page. Organic Search is the default channel; set channel to all to include every channel. Reads only the project's connected GA4 property. Uses no credits. For the pages visitors land on from search, with transactions and revenue, use get_google_analytics_organic_landing_pages.",
     inputSchema: pagePerformanceInputSchema,
     outputSchema: reportOutputSchema,
     annotations: {
@@ -405,7 +601,7 @@ export const getGoogleAnalyticsKeyEventsTool = {
   config: {
     title: "Get Google Analytics key events",
     description:
-      "Read active GA4 key events with counts and users by event or organic landing page. Previous-period comparison is available for the event breakdown. Reads only the GA4 property already connected to an OpenSEO project the caller is authorized to access. The server selects the Google account and property from that project's saved connection. Read-only and uses no OpenSEO credits.",
+      "Get the active GA4 key events (conversions), with counts and users by event or by organic landing page. A previous-period comparison is available for the event breakdown. Organic Search is the default channel. Reads only the project's connected GA4 property. Uses no credits. To check how key events are set up, use get_google_analytics_measurement_health.",
     inputSchema: keyEventsInputSchema,
     outputSchema: reportOutputSchema,
     annotations: {
@@ -436,7 +632,7 @@ export const getSearchOpportunitiesTool = {
   config: {
     title: "Get search opportunities",
     description:
-      "Join Search Console pages ranking in positions 4–20 with GA4 organic landing-page outcomes, then score matched opportunities by demand, business value, and reachability. Unmatched pages remain visible and unscored. Reads only the Search Console and GA4 properties already connected to an OpenSEO project the caller is authorized to access. The server selects the Google accounts and properties from that project's saved connections. Read-only and uses no OpenSEO credits.",
+      "Find the pages most worth improving: joins Search Console pages ranking in positions 4–20 with their GA4 organic landing-page outcomes, then scores matched opportunities by demand, business value, and reachability. Unmatched pages remain visible and unscored. Reads only the project's connected Search Console and GA4 properties. Uses no credits. For the queries behind a page, use get_search_console_performance.",
     inputSchema: opportunityInputSchema,
     outputSchema: opportunityOutputSchema,
     annotations: {
@@ -449,7 +645,7 @@ export const getSearchOpportunitiesTool = {
     try {
       const result = await SearchOpportunityService.getOpportunities(args);
       return mcpResponse({
-        text: `Search opportunities: ${result.rowCount} returned from ${result.totalCandidateRows} candidates. ${result.coverage.matchedRows} candidates matched GA4 landing pages.`,
+        text: opportunityText(result),
         meta: buildProjectMeta(context, args.projectId),
         structuredContent: result,
       });
@@ -472,7 +668,7 @@ export const getGoogleAnalyticsOrganicOverviewTool = {
   config: {
     title: "Get Google Analytics organic overview",
     description:
-      "Answer whether organic traffic is improving with top-line sessions, users, engagement, key events, transactions, revenue, an equal-length previous-period comparison, and a daily or weekly trend. Reads only the GA4 property already connected to an OpenSEO project the caller is authorized to access. The server selects the Google account and property from that project's saved connection. Read-only and uses no OpenSEO credits.",
+      "Check whether organic search traffic is improving: top-line sessions, users, engagement, key events, transactions, and revenue, compared with an equal-length previous period, plus a daily or weekly trend. Reads only the project's connected GA4 property. Uses no credits. For the pages behind the totals, use get_google_analytics_organic_landing_pages; for other channels, use get_google_analytics_traffic_acquisition.",
     inputSchema: overviewInputSchema,
     outputSchema: overviewOutputSchema,
     annotations: {
@@ -510,7 +706,7 @@ export const getGoogleAnalyticsTrafficAcquisitionTool = {
   config: {
     title: "Get Google Analytics traffic acquisition",
     description:
-      "Compare session acquisition by channel group, source/medium, or campaign, including sessions, users, engagement, key events, transactions, and revenue. Previous-period comparison is available for channel group; source/medium also reports attribution-quality diagnostics. Reads only the GA4 property already connected to an OpenSEO project the caller is authorized to access. The server selects the Google account and property from that project's saved connection. Read-only and uses no OpenSEO credits.",
+      "Compare where a site's traffic comes from, by channel group, source/medium, or campaign, with sessions, users, engagement, key events, transactions, and revenue. A previous-period comparison is available for channel group; source/medium also reports attribution-quality diagnostics. Reads only the project's connected GA4 property. Uses no credits. For organic search alone, use get_google_analytics_organic_overview.",
     inputSchema: trafficAcquisitionInputSchema,
     outputSchema: reportOutputSchema,
     annotations: {
@@ -547,7 +743,7 @@ export const getGoogleAnalyticsEcommercePerformanceTool = {
   config: {
     title: "Get Google Analytics ecommerce performance",
     description:
-      "Read item views, add-to-cart units, purchases, and item revenue by item, or transactions and purchase revenue by landing page. Returns a detected, none, or unknown activity state; landing pages can be limited to those with transactions. Organic Search is the default. Reads only the GA4 property already connected to an OpenSEO project the caller is authorized to access. The server selects the Google account and property from that project's saved connection. Read-only and uses no OpenSEO credits.",
+      "Get ecommerce results from GA4: item views, add-to-cart units, purchases, and item revenue by item, or transactions and purchase revenue by landing page. Returns a detected, none, or unknown activity state; landing pages can be limited to those with transactions. Organic Search is the default channel. Reads only the project's connected GA4 property. Uses no credits.",
     inputSchema: ecommerceInputSchema,
     outputSchema: reportOutputSchema,
     annotations: {
@@ -576,7 +772,7 @@ export const getGoogleAnalyticsSiteSearchTool = {
   config: {
     title: "Get Google Analytics site search",
     description:
-      "Read measured internal search terms with search events, users, sessions, engaged sessions, and engagement rate. Requires GA4 site-search measurement. Reads only the GA4 property already connected to an OpenSEO project the caller is authorized to access. The server selects the Google account and property from that project's saved connection. Read-only and uses no OpenSEO credits.",
+      "Get the terms visitors search for on the site itself, with search events, users, sessions, engaged sessions, and engagement rate. Requires GA4 site-search measurement. Reads only the project's connected GA4 property. Uses no credits. For the Google searches that bring visitors to the site, use get_search_console_performance.",
     inputSchema: siteSearchInputSchema,
     outputSchema: reportOutputSchema,
     annotations: {
@@ -614,7 +810,7 @@ export const getGoogleAnalyticsAudienceBreakdownTool = {
   config: {
     title: "Get Google Analytics audience breakdown",
     description:
-      "Read device, country, or new-versus-returning users, sessions, engagement, and key events. Previous-period comparison is available for device and new-versus-returning breakdowns. No demographic or user-level dimensions. Reads only the GA4 property already connected to an OpenSEO project the caller is authorized to access. The server selects the Google account and property from that project's saved connection. Read-only and uses no OpenSEO credits.",
+      "Break down a site's visitors by device, country, or new versus returning, with users, sessions, engagement, and key events. A previous-period comparison is available for the device and new-versus-returning breakdowns. Organic Search is the default channel. There are no demographic or user-level dimensions. Reads only the project's connected GA4 property. Uses no credits.",
     inputSchema: audienceInputSchema,
     outputSchema: reportOutputSchema,
     annotations: {
@@ -644,7 +840,7 @@ export const getGoogleAnalyticsMeasurementHealthTool = {
   config: {
     title: "Get Google Analytics measurement health",
     description:
-      "Diagnose the connected property's data streams, web measurement IDs, enhanced-measurement settings, key events, and custom definitions. Reads only the GA4 property already connected to an OpenSEO project the caller is authorized to access. The server selects the Google account and property from that project's saved connection. Read-only and uses no OpenSEO credits.",
+      "Check how Google Analytics is set up on the connected property: data streams, web measurement IDs, enhanced-measurement settings, key events, and custom definitions. Use it when GA4 numbers look missing or wrong. Reads only the project's connected GA4 property. Uses no credits.",
     inputSchema: measurementHealthInputSchema,
     outputSchema: measurementHealthOutputSchema,
     annotations: {
@@ -659,7 +855,7 @@ export const getGoogleAnalyticsMeasurementHealthTool = {
         args.projectId,
       );
       return mcpResponse({
-        text: `Measurement health: ${result.summary.webStreamCount} web stream(s), ${result.summary.keyEventCount} key event(s), and ${result.summary.issueCount} diagnostic issue(s).`,
+        text: measurementHealthText(result),
         meta: buildProjectMeta(context, args.projectId),
         structuredContent: result,
       });

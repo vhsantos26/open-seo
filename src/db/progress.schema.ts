@@ -2,42 +2,6 @@ import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { projects } from "./app.schema";
 
-// Point-in-time backlink profile summaries for the project's own domain,
-// written by the dashboard's visit-triggered refresh. DataForSEO's summary
-// already carries new/lost counts, so one snapshot renders a full card;
-// rows accumulate into history for future trend views. The domain is stored
-// per row so a later project-domain change doesn't rewrite history.
-export const backlinkSnapshots = sqliteTable(
-  "backlink_snapshots",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    projectId: text("project_id")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    domain: text("domain").notNull(),
-    rank: integer("rank"),
-    backlinks: integer("backlinks"),
-    referringDomains: integer("referring_domains"),
-    brokenBacklinks: integer("broken_backlinks"),
-    newBacklinks: integer("new_backlinks"),
-    lostBacklinks: integer("lost_backlinks"),
-    newReferringDomains: integer("new_referring_domains"),
-    lostReferringDomains: integer("lost_referring_domains"),
-    // Referring domains under the spam-score cut the Backlinks page uses to hide
-    // spam. Null on snapshots taken before it was recorded, or if its call failed.
-    qualityReferringDomains: integer("quality_referring_domains"),
-    capturedAt: text("captured_at")
-      .notNull()
-      .default(sql`(current_timestamp)`),
-  },
-  (table) => [
-    index("backlink_snapshots_project_captured_idx").on(
-      table.projectId,
-      table.capturedAt,
-    ),
-  ],
-);
-
 // Dated notes on what changed on the site ("rewrote the intro", "published the
 // guide"), optionally tied to one page, so the progress view can line a change
 // up against the ranking and traffic that followed. `date` is the day the change

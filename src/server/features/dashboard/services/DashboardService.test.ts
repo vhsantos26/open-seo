@@ -1,123 +1,91 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
+import { DashboardService } from "./DashboardService";
 
-const { latestMock, historyMock, insertMock, summaryMock, domainsMock } =
-  vi.hoisted(() => ({
-    latestMock: vi.fn(),
-    historyMock: vi.fn(),
-    insertMock: vi.fn(),
-    summaryMock: vi.fn(),
-    domainsMock: vi.fn(),
-  }));
-
-vi.mock(
-  "@/server/features/dashboard/repositories/BacklinkSnapshotRepository",
-  () => ({
-    BacklinkSnapshotRepository: {
-      getLatestForProject: latestMock,
-      listHistory: historyMock,
-      insert: insertMock,
-    },
-  }),
-);
-vi.mock("@/server/lib/dataforseo", () => ({
-  normalizeBacklinksTarget: () => ({
-    apiTarget: "doisrios.com",
-    includeSubdomains: true,
-  }),
-  createDataforseoClient: () => ({
-    backlinks: { summary: summaryMock, referringDomains: domainsMock },
-  }),
+const repository = vi.hoisted(() => ({
+  audits: vi.fn(),
+  issues: vi.fn(),
 }));
-// Loaded by the service but not exercised here; they pull in the Workers runtime.
 vi.mock("@/server/features/projects/repositories/ProjectRepository", () => ({
   ProjectRepository: {},
 }));
 vi.mock(
   "@/server/features/activation/repositories/ActivationRepository",
-  () => ({
-    ActivationRepository: {},
-  }),
+  () => ({ ActivationRepository: {} }),
 );
-vi.mock("@/server/features/audit/repositories/AuditRepository", () => ({
-  AuditRepository: {},
-}));
-vi.mock("@/server/features/audit/repositories/auditSummaryQueries", () => ({}));
 vi.mock("@/server/features/ga4/repositories/Ga4ConnectionRepository", () => ({
   Ga4ConnectionRepository: {},
 }));
 vi.mock("@/server/features/gsc/repositories/GscConnectionRepository", () => ({
   GscConnectionRepository: {},
 }));
+vi.mock("@/server/features/reports/repositories/ReportRepository", () => ({
+  ReportRepository: {},
+}));
+vi.mock("@/server/features/audit/repositories/AuditRepository", () => ({
+  AuditRepository: {
+    getAuditsByProject: repository.audits,
+  },
+}));
+vi.mock("@/server/features/audit/repositories/auditSummaryQueries", () => ({
+  getIssueTypePageCountsForAudit: repository.issues,
+}));
 
-import { DashboardService } from "./DashboardService";
-
-const HOUR = 60 * 60 * 1000;
-const billingCustomer = {
-  organizationId: "org",
-  userId: "user",
-  userEmail: "a@example.com",
+const ownAudit = {
+  id: "own-site",
+  startUrl: "https://www.example.com/about",
+  status: "completed",
+  pagesCrawled: 50,
+  startedAt: "2026-10-01T00:00:00Z",
+};
+const competitor = {
+  ...ownAudit,
+  id: "competitor",
+  startUrl: "https://example.com.other.net/",
 };
 
-function snapshot(ageMs: number, qualityReferringDomains: number | null) {
-  return {
-    domain: "doisrios.com",
-    capturedAt: new Date(Date.now() - ageMs).toISOString(),
-    qualityReferringDomains,
-  };
-}
+beforeEach(() => {
+  repository.audits.mockResolvedValue([competitor, ownAudit]);
+  repository.issues.mockResolvedValue([]);
+});
 
-function ensure() {
-  return DashboardService.ensureBacklinkSnapshot({
-    projectId: "project-1",
-    domain: "doisrios.com",
-    billingCustomer,
+it("shows the newest audit matching the saved website instead of a newer competitor audit", async () => {
+  const result = await DashboardService.getOverview({
+    projectId: "project",
+    domain: "example.com",
   });
-}
+  expect(result.audit?.id).toBe("own-site");
+});
 
-describe("ensureBacklinkSnapshot", () => {
-  beforeEach(() => {
-    historyMock.mockResolvedValue([]);
-    summaryMock.mockResolvedValue({ referring_domains: 1119, backlinks: 1153 });
-    domainsMock.mockResolvedValue({ items: [], totalCount: 42 });
+it("includes the active performance-check phase after the page crawl finishes", async () => {
+  repository.audits.mockResolvedValue([
+    {
+      ...ownAudit,
+      status: "running",
+      pagesTotal: 50,
+      currentPhase: "lighthouse",
+      lighthouseCompleted: 9,
+      lighthouseFailed: 1,
+      lighthouseTotal: 20,
+    },
+  ]);
+  const result = await DashboardService.getOverview({
+    projectId: "project",
+    domain: "example.com",
   });
-
-  it("keeps a recent snapshot that already has the quality count", async () => {
-    latestMock.mockResolvedValue(snapshot(2 * HOUR, 40));
-
-    await ensure();
-
-    expect(summaryMock).not.toHaveBeenCalled();
-  });
-
-  it("fills in a missing quality count after an hour and stores it", async () => {
-    latestMock.mockResolvedValue(snapshot(2 * HOUR, null));
-
-    await ensure();
-
-    expect(insertMock).toHaveBeenCalledWith(
-      expect.objectContaining({ qualityReferringDomains: 42 }),
-    );
-  });
-
-  it("does not retry a missing quality count within the hour", async () => {
-    latestMock.mockResolvedValue(snapshot(10 * 60 * 1000, null));
-
-    await ensure();
-
-    expect(summaryMock).not.toHaveBeenCalled();
-  });
-
-  it("still stores the snapshot when the quality call fails", async () => {
-    latestMock.mockResolvedValue(snapshot(30 * HOUR, 40));
-    domainsMock.mockRejectedValue(new Error("boom"));
-
-    await ensure();
-
-    expect(insertMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        referringDomains: 1119,
-        qualityReferringDomains: null,
-      }),
-    );
+  expect(result.audit).toMatchObject({
+    currentPhase: "lighthouse",
+    lighthouseCompleted: 9,
+    lighthouseFailed: 1,
+    lighthouseTotal: 20,
   });
 });
+
+it.each([null, "other.example.com", "example.net"])(
+  "shows no audit when the saved website is %s",
+  async (domain) => {
+    expect(
+      await DashboardService.getOverview({ projectId: "project", domain }),
+    ).toEqual({ audit: null });
+    expect(repository.issues).not.toHaveBeenCalled();
+  },
+);

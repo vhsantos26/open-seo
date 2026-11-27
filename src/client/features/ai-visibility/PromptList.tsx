@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
+import { Info, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { ExportMenu } from "@/client/components/ExportMenu";
+import { SegmentedToggle } from "@/client/components/SegmentedToggle";
 import { DataTableToolbar } from "@/client/components/table/DataTableToolbar";
+import { Alert, AlertDescription } from "@/client/components/ui/alert";
 import { Button } from "@/client/components/ui/button";
 import { Input } from "@/client/components/ui/input";
 import { exportAiVisibilityData } from "@/serverFunctions/ai-visibility";
@@ -11,17 +13,24 @@ import { safeHttpUrl } from "@/shared/safe-url";
 import { getStandardErrorMessage } from "@/client/lib/error-messages";
 import type { AiPrompt, AiRun, AiTrackerState } from "@/shared/ai-visibility";
 import type { AiTrackerPatch } from "@/types/schemas/ai-visibility";
-import { PromptInventory } from "./PromptInventory";
 import {
-  AiQueryError,
-  aiVisibilityKey,
-  fetchAllAiVisibilityResults,
-} from "./shared";
+  BrandedFilter,
+  PromptInventory,
+  promptHasResults,
+} from "./PromptInventory";
+import { AiQueryError, aiRunResultsQueryOptions } from "./shared";
+
+const BRANDED_FILTERS = [
+  { value: BrandedFilter.All, icon: null, label: "All" },
+  { value: BrandedFilter.NonBranded, icon: null, label: "Non-branded" },
+  { value: BrandedFilter.Branded, icon: null, label: "Branded" },
+];
 
 export function PromptList({
   projectId,
   state,
   currentRun,
+  collecting,
   onSetup,
   onEdit,
   onReduce,
@@ -31,25 +40,18 @@ export function PromptList({
   projectId: string;
   state: AiTrackerState;
   currentRun: AiRun | null;
+  collecting: boolean;
   onSetup: () => void;
   onEdit: (prompt: AiPrompt) => void;
   onReduce: (patch: AiTrackerPatch) => void;
-  onReview: (patch: AiTrackerPatch, description: string) => void;
+  onReview: (patch: AiTrackerPatch) => void;
   reducePending: boolean;
 }) {
   const [search, setSearch] = useState("");
-  // Every answer in the run, so each prompt can show its per-engine result.
-  const results = useQuery({
-    queryKey: [...aiVisibilityKey(projectId), "results", "all", currentRun?.id],
-    queryFn: async () => {
-      const result = await fetchAllAiVisibilityResults({
-        projectId,
-        runId: currentRun?.id,
-      });
-      return result.rows;
-    },
-    enabled: Boolean(currentRun),
-  });
+  const [brandedFilter, setBrandedFilter] = useState<BrandedFilter>(
+    BrandedFilter.All,
+  );
+  const results = useQuery(aiRunResultsQueryOptions(projectId, currentRun?.id));
   const exportMutation = useMutation({
     mutationFn: (format: "json" | "csv") =>
       exportAiVisibilityData({
@@ -103,6 +105,12 @@ export function PromptList({
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
+        <SegmentedToggle
+          showLabels
+          items={BRANDED_FILTERS}
+          value={brandedFilter}
+          onChange={setBrandedFilter}
+        />
       </DataTableToolbar>
       {results.isError && (
         <AiQueryError
@@ -112,18 +120,26 @@ export function PromptList({
           }}
         />
       )}
-      {currentRun && results.isPending && (
-        <p className="px-4 py-2 text-xs text-muted-foreground" role="status">
-          Loading latest results…
-        </p>
-      )}
+      {/* Only before any prompt has results; rows gray out individually. */}
+      {!collecting &&
+        !prompts.some((prompt) => promptHasResults(prompt, results.data)) && (
+          <Alert variant="info" banner>
+            <Info />
+            <AlertDescription>
+              Run prompts before interacting with results.
+            </AlertDescription>
+          </Alert>
+        )}
       <PromptInventory
         projectId={projectId}
         prompts={prompts}
         topics={state.topics}
         search={search}
+        brandedFilter={brandedFilter}
         engines={state.engines}
         rows={results.data}
+        loading={results.isLoading}
+        scheduled={Boolean(state.tracker?.enabled)}
         pending={reducePending}
         onEdit={onEdit}
         onReduce={onReduce}

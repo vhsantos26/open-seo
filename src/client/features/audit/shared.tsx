@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
+  Ban,
   CheckCircle,
   FileWarning,
   Info,
@@ -13,6 +14,8 @@ import { Badge } from "@/client/components/ui/badge";
 import { Spinner } from "@/client/components/ui/spinner";
 import { getAuditCapabilities } from "@/serverFunctions/audit";
 import type { IssueSeverity } from "@/shared/audit-issues";
+import { AuditStatus } from "@/shared/audit-status";
+import { parseDbTimestamp } from "@/client/lib/db-timestamp";
 
 export function extractPathname(url: string): string {
   try {
@@ -31,7 +34,7 @@ export function extractHostname(url: string): string {
 }
 
 export function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString("en-US", {
+  return parseDbTimestamp(dateStr).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -39,7 +42,7 @@ export function formatDate(dateStr: string): string {
 }
 
 export function formatStartedAt(dateStr: string): string {
-  return new Date(dateStr).toLocaleString("en-US", {
+  return parseDbTimestamp(dateStr).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -47,8 +50,8 @@ export function formatStartedAt(dateStr: string): string {
   });
 }
 
-export function StatusBadge({ status }: { status: string }) {
-  if (status === "running") {
+export function StatusBadge({ status }: { status: AuditStatus }) {
+  if (status === AuditStatus.Running) {
     return (
       <Badge variant="info">
         <Spinner /> Running
@@ -56,10 +59,18 @@ export function StatusBadge({ status }: { status: string }) {
     );
   }
 
-  if (status === "completed") {
+  if (status === AuditStatus.Completed) {
     return (
       <Badge variant="success">
         <CheckCircle /> Done
+      </Badge>
+    );
+  }
+
+  if (status === AuditStatus.Refused) {
+    return (
+      <Badge variant="destructive">
+        <Ban /> Blocked
       </Badge>
     );
   }

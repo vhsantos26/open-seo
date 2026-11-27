@@ -1,10 +1,14 @@
 import { z } from "zod";
+import { AI_PROMPT_LIMIT } from "@/shared/ai-visibility";
 import { scheduleTimeSchema } from "./schedule-time";
 
 export const aiEngineSchema = z.enum([
   "chatgpt",
   "gemini",
   "google_ai_overview",
+  "google_ai_mode",
+  "claude",
+  "perplexity",
 ]);
 export const aiProjectSchema = z.object({ projectId: z.string().uuid() });
 const topicSchema = z.string().trim().min(1).max(100);
@@ -56,14 +60,14 @@ export const aiTrackerPatchSchema = z.object({
         topic: topicSchema
           .optional()
           .describe(
-            "Topic name that groups the prompt. New prompts default to General; edits keep the saved topic.",
+            "Topic name that groups the prompt. New prompts default to General; edits without a topic keep the saved topic. Set it on an existing prompt to move the prompt; to rename a topic, move every prompt in it.",
           ),
         paused: z.boolean().optional(),
       }),
     )
-    .max(100)
+    .max(AI_PROMPT_LIMIT)
     .optional(),
-  archivePromptIds: z.array(z.string().uuid()).max(100).optional(),
+  archivePromptIds: z.array(z.string().uuid()).max(AI_PROMPT_LIMIT).optional(),
 });
 export const saveAiTrackerSchema = aiProjectSchema.extend(
   aiTrackerPatchSchema.shape,
@@ -77,7 +81,7 @@ export const estimateAiCostSchema = aiProjectSchema.extend({
   patch: aiTrackerPatchSchema
     .optional()
     .describe("Optional proposed changes to estimate before saving."),
-  promptIds: z.array(z.string().uuid()).min(1).max(100).optional(),
+  promptIds: z.array(z.string().uuid()).min(1).max(AI_PROMPT_LIMIT).optional(),
 });
 export const setAiScheduleSchema = aiProjectSchema.extend({
   enabled: z.boolean(),
@@ -98,9 +102,9 @@ export const runAiCheckSchema = aiProjectSchema.extend({
     .positive()
     .max(100)
     .describe(
-      "The most the user approved for this one check, from estimate_ai_visibility_cost. The check is refused if its current cost is higher.",
+      "Spending ceiling for this one check: runNowCostUsd from estimate_ai_visibility_cost. The check is refused if its current cost is higher.",
     ),
-  promptIds: z.array(z.string().uuid()).min(1).max(100).optional(),
+  promptIds: z.array(z.string().uuid()).min(1).max(AI_PROMPT_LIMIT).optional(),
 });
 export const getAiRunSchema = aiProjectSchema.extend({
   runId: z.string().uuid(),
@@ -149,6 +153,13 @@ export const aiResultsSchema = aiProjectSchema.extend({
     ),
   limit: z.number().int().min(1).max(50).default(25),
 });
+/**
+ * App reads take the whole result set in one call: it is bounded by one run's
+ * prompts and engines, or one prompt's latest 50 runs. Omit limit for every row.
+ */
+export const aiPageResultsSchema = aiResultsSchema
+  .omit({ cursor: true })
+  .extend({ limit: z.number().int().min(1).optional() });
 export const aiSourcesSchema = aiResultsSchema.extend({
   groupBy: z.enum(["url", "domain"]).default("url"),
   ownership: z.enum(["all", "own", "competitor", "other"]).default("all"),
@@ -174,6 +185,7 @@ export type EstimateAiCostInput = z.infer<typeof estimateAiCostSchema>;
 export type SetAiScheduleInput = z.infer<typeof setAiScheduleSchema>;
 export type RunAiCheckInput = z.infer<typeof runAiCheckSchema>;
 export type AiResultsInput = z.infer<typeof aiResultsSchema>;
+export type AiPageResultsInput = z.infer<typeof aiPageResultsSchema>;
 export type AiSourcesInput = z.infer<typeof aiSourcesSchema>;
 export type AiExportInput = z.infer<typeof aiExportSchema>;
 export type AiTrendInput = z.infer<typeof aiTrendSchema>;

@@ -1,39 +1,28 @@
 import { CardShell } from "@/client/components/CardShell";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Area, AreaChart, XAxis, YAxis } from "recharts";
 import {
+  cardMetaClass,
   moreDetailsClass,
-  StatGridSkeleton,
 } from "@/client/features/dashboard/cardParts";
-import { StatTile } from "@/client/components/StatTile";
+import {
+  MetricRow,
+  MetricsSkeleton,
+  TrendChart,
+} from "@/client/features/dashboard/DashboardMetrics";
+import { percentChange } from "@/client/components/MetricsTable";
 import { Ga4ConnectCard } from "@/client/features/dashboard/Ga4ConnectCard";
 import {
   formatCount,
   formatCtr,
 } from "@/client/features/search-performance/SearchPerformanceColumns";
+import { GoogleAnalyticsLogo } from "@/client/features/integrations/GoogleProductLogos";
 import { getGa4DashboardReport } from "@/serverFunctions/ga4";
-import { Skeleton } from "@/client/components/ui/skeleton";
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from "@/client/components/ui/chart";
+import type { ChartConfig } from "@/client/components/ui/chart";
 
 const sessionsChartConfig = {
-  sessions: { label: "Sessions", color: "var(--color-primary)" },
+  sessions: { label: "Sessions", color: "var(--chart-1)" },
 } satisfies ChartConfig;
-
-function formatTrendDay(date: string): string {
-  // Construct in local time: Date.parse("2026-08-01") is UTC midnight, which
-  // toLocaleDateString would render as the previous day west of Greenwich.
-  const [year, month, day] = date.split("-").map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
-}
 
 function statValue(
   value: number | null,
@@ -66,8 +55,11 @@ export function Ga4Card({
   // period would otherwise render an all-zero flatline chart in an empty box.
   return (
     <CardShell
-      title="Organic traffic"
-      stamp="Google Analytics · last 28 days"
+      title="Google Analytics"
+      icon={<GoogleAnalyticsLogo className="size-5" />}
+      titleInfo={
+        <span className={cardMetaClass}>Organic search · Last 28 days</span>
+      }
       action={
         <Link
           to="/p/$projectId/settings"
@@ -84,73 +76,48 @@ export function Ga4Card({
           Couldn&rsquo;t load Google Analytics data. Try again shortly.
         </p>
       ) : !report ? (
-        <div className="space-y-3" aria-busy>
-          <StatGridSkeleton tileClassName="h-16" />
-          <Skeleton className="h-24" />
-        </div>
+        <MetricsSkeleton />
       ) : !report.totals.sessions ? (
         <p className="text-sm text-muted-foreground">
           No organic search traffic recorded in the last 28 days yet.
         </p>
       ) : (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <StatTile
-              label="Sessions"
-              value={statValue(report.totals.sessions, formatCount)}
-              delta={{
-                current: report.totals.sessions,
-                previous: report.prevTotals.sessions,
-              }}
-            />
-            <StatTile
-              label="Active users"
-              value={statValue(report.totals.activeUsers, formatCount)}
-              delta={{
-                current: report.totals.activeUsers,
-                previous: report.prevTotals.activeUsers,
-              }}
-            />
-            <StatTile
-              label="Engagement rate"
-              value={statValue(report.totals.engagementRate, formatCtr)}
-            />
-            <StatTile
-              label="Key events"
-              value={statValue(report.totals.keyEvents, formatCount)}
-              delta={{
-                current: report.totals.keyEvents,
-                previous: report.prevTotals.keyEvents,
-              }}
-            />
-          </div>
-          <ChartContainer config={sessionsChartConfig} className="h-24">
-            <AreaChart
-              data={report.trend}
-              margin={{ top: 4, right: 0, bottom: 0, left: 0 }}
-            >
-              <XAxis dataKey="date" hide />
-              <YAxis hide domain={[0, "auto"]} />
-              <ChartTooltip
-                content={
-                  <ChartTooltipContent
-                    labelFormatter={(label: unknown) =>
-                      typeof label === "string" ? formatTrendDay(label) : ""
-                    }
-                    valueFormatter={(value) => formatCount(Number(value))}
-                  />
-                }
-              />
-              <Area
-                type="monotone"
-                dataKey="sessions"
-                stroke="var(--color-sessions)"
-                strokeWidth={2}
-                fill="var(--color-sessions)"
-                fillOpacity={0.08}
-              />
-            </AreaChart>
-          </ChartContainer>
+        <div className="flex flex-1 flex-col gap-4">
+          <MetricRow
+            metrics={[
+              {
+                label: "Sessions",
+                value: statValue(report.totals.sessions, formatCount),
+                change: percentChange(
+                  report.totals.sessions,
+                  report.prevTotals.sessions,
+                ),
+                dotClass: "bg-chart-1",
+              },
+              {
+                label: "Active users",
+                value: statValue(report.totals.activeUsers, formatCount),
+                change: percentChange(
+                  report.totals.activeUsers,
+                  report.prevTotals.activeUsers,
+                ),
+              },
+              {
+                label: "Engagement rate",
+                value: statValue(report.totals.engagementRate, formatCtr),
+                change: null,
+              },
+              {
+                label: "Key events",
+                value: statValue(report.totals.keyEvents, formatCount),
+                change: percentChange(
+                  report.totals.keyEvents,
+                  report.prevTotals.keyEvents,
+                ),
+              },
+            ]}
+          />
+          <TrendChart config={sessionsChartConfig} data={report.trend} />
         </div>
       )}
     </CardShell>
