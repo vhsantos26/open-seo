@@ -1,5 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
-import { reverse } from "remeda";
+import { desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { backlinkSnapshots } from "@/db/schema";
 
@@ -19,22 +18,6 @@ async function getLatestForProject(
   return rows[0] ?? null;
 }
 
-/** Oldest first, capped at the newest `limit` rows, for the growth chart. */
-async function listHistory(projectId: string, domain: string, limit: number) {
-  const rows = await db
-    .select()
-    .from(backlinkSnapshots)
-    .where(
-      and(
-        eq(backlinkSnapshots.projectId, projectId),
-        eq(backlinkSnapshots.domain, domain),
-      ),
-    )
-    .orderBy(desc(backlinkSnapshots.id))
-    .limit(limit);
-  return reverse(rows);
-}
-
 async function insert(
   values: typeof backlinkSnapshots.$inferInsert,
 ): Promise<BacklinkSnapshot> {
@@ -47,6 +30,5 @@ async function insert(
 
 export const BacklinkSnapshotRepository = {
   getLatestForProject,
-  listHistory,
   insert,
 };

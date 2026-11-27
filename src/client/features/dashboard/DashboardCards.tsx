@@ -20,7 +20,6 @@ import {
   StatGridSkeleton,
 } from "@/client/features/dashboard/cardParts";
 import { StatTile } from "@/client/components/StatTile";
-import { BacklinkGrowthChart } from "@/client/features/dashboard/BacklinkGrowthChart";
 import type {
   DashboardAuditSummary,
   DashboardBacklinkSummary,
@@ -269,15 +268,6 @@ export function BacklinkPulseCard({
           }
         />
         <StatTile
-          label="Quality domains"
-          value={
-            backlinks.qualityReferringDomains === null
-              ? "—"
-              : backlinks.qualityReferringDomains.toLocaleString()
-          }
-          hint="Spam score 40 or lower"
-        />
-        <StatTile
           label="Backlinks"
           value={
             backlinks.backlinks === null
@@ -285,16 +275,9 @@ export function BacklinkPulseCard({
               : backlinks.backlinks.toLocaleString()
           }
         />
-        {/* The new/lost counts are missing for many domains; showing two
-            dashes teaches nothing. */}
-        {backlinks.newBacklinks !== null || backlinks.lostBacklinks !== null ? (
-          <StatTile
-            label="New / lost links"
-            value={`▲ ${newLost(backlinks.newBacklinks)} · ▼ ${newLost(backlinks.lostBacklinks)}`}
-          />
-        ) : null}
+        <StatTile label="New links" value={newLost(backlinks.newBacklinks)} />
+        <StatTile label="Lost links" value={newLost(backlinks.lostBacklinks)} />
       </div>
-      <BacklinkGrowthChart history={backlinks.history} />
       {/* Raw counts grow with automated directories and scrapers that carry
           no ranking value, so a rising number is not evidence of progress. */}
       <p className="pt-3 text-xs text-muted-foreground">

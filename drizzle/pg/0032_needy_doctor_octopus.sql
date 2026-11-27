@@ -1,1 +1,0 @@
-ALTER TABLE "backlink_snapshots" ADD COLUMN "quality_referring_domains" bigint;
